@@ -74,6 +74,27 @@ function titleFromRaw(rawText) {
   return rawText.replace(/\s+/g, ' ').trim();
 }
 
+
+function createTodayExecutionState(status = 'not started') {
+  return {
+    status,
+    updatedAt: new Date().toISOString(),
+    notes: []
+  };
+}
+
+function normalizeTodayExecution(item) {
+  const execution = item.execution || {};
+  return {
+    ...item,
+    execution: {
+      status: execution.status || item.status || 'not started',
+      updatedAt: execution.updatedAt || item.updatedAt || new Date().toISOString(),
+      notes: Array.isArray(execution.notes) ? execution.notes : []
+    }
+  };
+}
+
 /**
  * Deterministic token parser for the documented capture syntax.
  *
@@ -291,17 +312,82 @@ export class AppStore {
     const pool = [...this.state.suggestions.must, ...this.state.suggestions.should, ...this.state.suggestions.could];
     const suggestion = pool.find((entry) => entry.id === suggestionId);
     if (!suggestion) return;
-    this.state.today.push({ ...suggestion, bucket, status: 'not started' });
+
+    // Prevent duplicate Today entries for the same suggestion while preserving existing order.
+    const alreadyPresent = this.state.today.some((entry) => (entry.suggestionId || entry.id) === suggestionId);
+    if (alreadyPresent) return;
+
+    this.state.today.push({
+      ...suggestion,
+      id: `today_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      suggestionId,
+      bucket,
+      execution: createTodayExecutionState('not started'),
+      status: 'not started'
+    });
     await this.persist();
     this.emit();
   }
 
   async reorderToday(id, direction) {
+    // Moving an item swaps adjacent rows only; no re-sort means unchanged rows keep their relative order.
     const index = this.state.today.findIndex((entry) => entry.id === id);
     if (index === -1) return;
     const target = direction === 'up' ? index - 1 : index + 1;
     if (target < 0 || target >= this.state.today.length) return;
     [this.state.today[index], this.state.today[target]] = [this.state.today[target], this.state.today[index]];
+    await this.persist();
+    this.emit();
+  }
+
+  async setTodayStatus(id, status) {
+    // Allowed status transitions for active work items.
+    const allowedStatuses = ['not started', 'in progress', 'waiting', 'blocked', 'complete', 'cancelled', 'deferred', 'archived'];
+    if (!allowedStatuses.includes(status)) return;
+
+    const index = this.state.today.findIndex((entry) => entry.id === id);
+    if (index === -1) return;
+
+    // Side effect: keep legacy `status` while treating `execution.status` as source of truth for MVP persistence.
+    const next = normalizeTodayExecution(this.state.today[index]);
+    next.execution.status = status;
+    next.execution.updatedAt = new Date().toISOString();
+    next.status = status;
+    this.state.today[index] = next;
+
+    // Persistence expectation: save status changes immediately so execute progress survives refreshes.
+    await this.persist();
+    this.emit();
+  }
+
+  async deferTodayItem(id) {
+    // Defer marks the item as intentionally postponed but keeps it in Today for visibility.
+    await this.setTodayStatus(id, 'deferred');
+  }
+
+  async archiveTodayItem(id) {
+    // Archive marks the item as parked; item remains in Today for MVP history and can still show notes.
+    await this.setTodayStatus(id, 'archived');
+  }
+
+  async addTodayUpdateNote(id, noteText) {
+    const note = (noteText || '').trim();
+    if (!note) return;
+
+    const index = this.state.today.findIndex((entry) => entry.id === id);
+    if (index === -1) return;
+
+    // Note side effect: append immutable timestamped updates directly onto the Today item execution state.
+    const next = normalizeTodayExecution(this.state.today[index]);
+    next.execution.notes.push({
+      id: `note_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      text: note,
+      createdAt: new Date().toISOString()
+    });
+    next.execution.updatedAt = new Date().toISOString();
+    this.state.today[index] = next;
+
+    // Persistence expectation: notes are workflow evidence and must be saved with each write.
     await this.persist();
     this.emit();
   }
