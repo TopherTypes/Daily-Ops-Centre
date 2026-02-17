@@ -150,6 +150,16 @@ export function renderClose(state) {
           <button class="button" type="button" data-close-action="close-day">Close day now</button>
           <p class="muted" style="margin-top:0.4rem;">This action keeps entities (tasks/projects/people) and resets only Today items.</p>
         </article>
+        <article class="col checklist-step">
+          <strong>Settings &amp; Help: sample/demo utilities</strong>
+          <div style="display:flex; gap:0.4rem; flex-wrap:wrap; margin-top:0.45rem;">
+            <button class="button" type="button" data-close-action="load-sample-data">Load sample data</button>
+            <button class="button" type="button" data-close-action="reset-all-local-data">Reset all local data</button>
+          </div>
+          <p class="muted" style="margin-top:0.4rem;">
+            Sample data is opt-in only and marks the app as demo mode. Reset clears all local collections for a clean production-like environment.
+          </p>
+        </article>
       </div>
     </section>
   `;

@@ -481,6 +481,20 @@ function bindGlobalEvents() {
         } else {
           window.alert('Day closed. Daily Log saved and Today plan reset.');
         }
+      } else if (action === 'load-sample-data') {
+        // Explicit confirmation keeps demo fixtures opt-in for production users.
+        const confirmed = window.confirm('Load sample data? This replaces your current local data with demo records.');
+        if (!confirmed) return;
+
+        await store.loadSampleData();
+        window.alert('Sample data loaded. Demo mode is now active for this local dataset.');
+      } else if (action === 'reset-all-local-data') {
+        // Reset is intentionally hard-confirmed because this clears every local collection.
+        const confirmed = window.confirm('Reset all local data? This permanently clears your local records on this device.');
+        if (!confirmed) return;
+
+        await store.resetAllLocalData();
+        window.alert('All local data reset. The app is now in production-safe empty mode.');
       }
       return;
     }

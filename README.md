@@ -4,7 +4,7 @@ A single-page productivity web app designed to offload working memory with a sim
 
 **Capture → Plan → Execute → Close**
 
-Built for GitHub Pages (no backend). Data is stored locally and can be exported/imported. Current wireframe persistence now records field-level stamps for mutable entity fields and resolves conflicts per field during imports. A future milestone adds automated Google Drive sync on top of the same merge primitives.
+Built for GitHub Pages (no backend). Data is stored locally and can be exported/imported. Current wireframe persistence now records field-level stamps for mutable entity fields and resolves conflicts per field during imports. The app now starts with production-safe empty collections by default; demo/sample records are available only through an explicit user action in Close → Settings & Help. A future milestone adds automated Google Drive sync on top of the same merge primitives.
 
 ## Core principles
 
@@ -85,6 +85,14 @@ Follow-ups surface in:
 ### Local storage
 - Uses IndexedDB via a small wrapper.
 - Each record uses **field-level stamps**: every field stores `{ value, updatedAt, updatedByDeviceId }` to support per-field conflict resolution.
+- Persisted state includes an `isDemoMode` flag so seeded demo fixtures are explicitly tracked and never loaded automatically in normal environments.
+
+### Sample data behavior (important)
+- First run is intentionally empty (production-safe).
+- To explore the app quickly, open **Close → Settings & Help** and click **Load sample data**.
+- **Load sample data** replaces the current local dataset with demo fixtures and sets `isDemoMode = true`.
+- **Reset all local data** wipes all local collections and returns to empty production-safe state (`isDemoMode = false`).
+- Screenshots or walkthroughs that show populated lists should be treated as demo-mode examples unless explicitly noted.
 
 ### Export / Import (manual backup + restore)
 - Export is always available from the top bar and downloads a single JSON snapshot file.
@@ -116,7 +124,7 @@ Follow-ups surface in:
 ### State schema migration expectations
 - Persisted IndexedDB records now store a versioned payload envelope: `payload.schemaVersion` + `payload.collections`.
 - App startup runs ordered migrations from the stored schema version to the current schema before assigning in-memory state.
-- Migrations are designed to be **non-fatal**: when a migration step fails or the payload is malformed/newer-than-supported, the app logs warnings and falls back to seeded default state so the UI remains usable.
+- Migrations are designed to be **non-fatal**: when a migration step fails or the payload is malformed/newer-than-supported, the app logs warnings and falls back to an empty production-safe local state so the UI remains usable.
 - After migration, guard-fills enforce required collections (`inbox`, `today`, `tasks`, etc.), suggestion buckets (`must/should/could`), and key fields (`lastActiveDate`, `today.execution/status`, inbox archive/snooze defaults).
 - Import flow uses the same migration path as startup, so manual backups from older schema versions remain forward-compatible.
 
