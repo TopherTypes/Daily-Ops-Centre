@@ -82,9 +82,24 @@ Follow-ups surface in:
 - Uses IndexedDB via a small wrapper.
 - Each record uses **field-level stamps**: every field stores `{ value, updatedAt, updatedByDeviceId }` to support per-field conflict resolution.
 
-### Export / Import
-- Export produces a single JSON file containing the entire database.
-- Import merges into existing data using per-field last-updated rules.
+### Export / Import (manual backup + restore)
+- Export is always available from the top bar and downloads a single JSON snapshot file.
+- Snapshot payload includes `schemaVersion`, `exportedAt`, `deviceId`, and all app collections.
+- Import is always available from the same top-bar controls.
+- Import requires a destructive-action confirmation before it runs.
+- Import validates snapshot structure before merging.
+- Merge strategy is intentionally minimal for the MVP: records are merged by `id`, matching IDs are replaced by imported versions, and local-only IDs are preserved.
+
+#### Manual backup flow
+1. Click **Export** in the top bar.
+2. Keep the downloaded JSON file in your preferred backup location (cloud drive, encrypted vault, etc.).
+3. Repeat exports regularly (for example, end-of-day or end-of-week).
+
+#### Manual restore flow
+1. Click **Import** in the top bar.
+2. Select a previously exported `.json` snapshot.
+3. Confirm the destructive-action warning.
+4. Review the in-app success/error status message shown in the top bar.
 
 ### Future: Google Drive sync
 Planned design:

@@ -82,6 +82,39 @@ body {
   margin-left: auto;
 }
 
+
+.backup-controls {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.hidden-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.status-text {
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+.status-text.ok {
+  color: var(--ok);
+}
+
+.status-text.warn {
+  color: var(--warn);
+}
+
+.status-text.error {
+  color: var(--danger);
+}
+
 .input,
 .select,
 .textarea {
