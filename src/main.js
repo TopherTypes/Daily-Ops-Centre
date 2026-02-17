@@ -407,6 +407,12 @@ async function applyPlanSuggestionBucketFromShortcut(event) {
 }
 
 function bindGlobalEvents() {
+  function hideCaptureKeyIfVisible() {
+    if (!uiState.captureKeyVisible) return;
+    uiState.captureKeyVisible = false;
+    store.emit();
+  }
+
   document.addEventListener('submit', async (event) => {
     const quickCapture = event.target.closest('[data-quick-capture]');
     const captureForm = event.target.closest('[data-capture-form]');
@@ -514,8 +520,15 @@ function bindGlobalEvents() {
     const nextTarget = event.relatedTarget;
     if (nextTarget instanceof Node && quickCapture.contains(nextTarget)) return;
 
-    uiState.captureKeyVisible = false;
-    store.emit();
+    hideCaptureKeyIfVisible();
+  });
+
+  // Clicking any non-quick-capture surface should collapse the parser key immediately,
+  // including non-focusable whitespace that does not trigger a focus transition.
+  document.addEventListener('pointerdown', (event) => {
+    if (!uiState.captureKeyVisible) return;
+    if (event.target.closest('[data-quick-capture]')) return;
+    hideCaptureKeyIfVisible();
   });
 
   document.addEventListener('click', async (event) => {
