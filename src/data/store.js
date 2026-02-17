@@ -1,8 +1,8 @@
 import { DbClient } from './db.js';
 import { getDeviceId } from './device.js';
 
-const SNAPSHOT_SCHEMA_VERSION = 2;
-const STATE_SCHEMA_VERSION = 2;
+const SNAPSHOT_SCHEMA_VERSION = 3;
+const STATE_SCHEMA_VERSION = 3;
 const STAMPED_FIELD_CONTAINER_KEY = '_fields';
 
 const MUTABLE_FIELDS_BY_COLLECTION = {
@@ -33,9 +33,35 @@ const IMPORTABLE_COLLECTIONS = [
 ];
 
 /**
- * Creates baseline mock entities used across modes and Library views.
+ * Creates a production-safe baseline state for normal users.
+ *
+ * All collections intentionally start empty so first-run environments do not
+ * show demo content by default.
  */
-function createSeedData() {
+function createEmptyState() {
+  const now = new Date();
+  return {
+    inbox: [],
+    suggestions: { must: [], should: [], could: [] },
+    today: [],
+    tasks: [],
+    people: [],
+    projects: [],
+    reminders: [],
+    notes: [],
+    meetings: [],
+    followUps: [],
+    dailyLogs: [],
+    isDemoMode: false,
+    // Local-date heartbeat used to detect startup day rollovers in a timezone-safe way.
+    lastActiveDate: toLocalIsoDate(now)
+  };
+}
+
+/**
+ * Creates opt-in demo entities for sample walkthroughs and QA demos.
+ */
+function createDemoSeedData() {
   const now = new Date();
   return {
     inbox: [
@@ -93,6 +119,7 @@ function createSeedData() {
       }
     ],
     dailyLogs: [],
+    isDemoMode: true,
     // Local-date heartbeat used to detect startup day rollovers in a timezone-safe way.
     lastActiveDate: toLocalIsoDate(now)
   };
@@ -319,6 +346,10 @@ function applyStateGuards(state) {
     guarded.lastActiveDate = toLocalIsoDate(new Date());
   }
 
+  if (typeof guarded.isDemoMode !== 'boolean') {
+    guarded.isDemoMode = false;
+  }
+
   return guarded;
 }
 
@@ -342,6 +373,17 @@ const STATE_MIGRATIONS = [
       }
       return migrated;
     }
+  },
+  {
+    fromVersion: 2,
+    toVersion: 3,
+    apply: (state) => {
+      // Schema v3 adds an explicit mode flag so demo fixtures can be opt-in only.
+      return {
+        ...structuredClone(state),
+        isDemoMode: Boolean(state?.isDemoMode)
+      };
+    }
   }
 ];
 
@@ -350,7 +392,7 @@ const STATE_MIGRATIONS = [
  */
 function migrateState(snapshot) {
   const warnings = [];
-  const fallbackState = applyStateGuards(createSeedData());
+  const fallbackState = applyStateGuards(createEmptyState());
 
   try {
     const record = snapshot && typeof snapshot === 'object' ? snapshot : {};
@@ -363,19 +405,19 @@ function migrateState(snapshot) {
       : Number(record.schemaVersion || 1);
 
     if (!workingState || typeof workingState !== 'object' || Number.isNaN(schemaVersion)) {
-      warnings.push('Loaded state was malformed. Falling back to seeded state.');
+      warnings.push('Loaded state was malformed. Falling back to empty local state.');
       return { state: fallbackState, schemaVersion: STATE_SCHEMA_VERSION, warnings };
     }
 
     if (schemaVersion > STATE_SCHEMA_VERSION) {
-      warnings.push(`Loaded schemaVersion ${schemaVersion} is newer than supported ${STATE_SCHEMA_VERSION}. Falling back to seeded state.`);
+      warnings.push(`Loaded schemaVersion ${schemaVersion} is newer than supported ${STATE_SCHEMA_VERSION}. Falling back to empty local state.`);
       return { state: fallbackState, schemaVersion: STATE_SCHEMA_VERSION, warnings };
     }
 
     while (schemaVersion < STATE_SCHEMA_VERSION) {
       const step = STATE_MIGRATIONS.find((entry) => entry.fromVersion === schemaVersion);
       if (!step) {
-        warnings.push(`No migration path found from schemaVersion ${schemaVersion}. Falling back to seeded state.`);
+        warnings.push(`No migration path found from schemaVersion ${schemaVersion}. Falling back to empty local state.`);
         return { state: fallbackState, schemaVersion: STATE_SCHEMA_VERSION, warnings };
       }
 
@@ -389,7 +431,7 @@ function migrateState(snapshot) {
       warnings
     };
   } catch (error) {
-    warnings.push(`State migration failed with error: ${error instanceof Error ? error.message : 'unknown error'}. Falling back to seeded state.`);
+    warnings.push(`State migration failed with error: ${error instanceof Error ? error.message : 'unknown error'}. Falling back to empty local state.`);
     return { state: fallbackState, schemaVersion: STATE_SCHEMA_VERSION, warnings };
   }
 }
@@ -515,7 +557,7 @@ export function parseCaptureTokens(rawText, options = {}) {
 export class AppStore {
   constructor() {
     this.db = new DbClient();
-    this.state = createSeedData();
+    this.state = createEmptyState();
     this.listeners = new Set();
     this.startupRolloverNotice = null;
     this.migrationWarnings = [];
@@ -598,14 +640,14 @@ export class AppStore {
         await this.persist();
       }
     } catch (error) {
-      this.migrationWarnings = ['Initialization failed. Using in-memory seeded state.'];
+      this.migrationWarnings = ['Initialization failed. Using in-memory empty local state.'];
       this.logPersistenceDiagnostic('init', error, { schemaVersion: STATE_SCHEMA_VERSION });
       this.setPersistenceStatus({
         degraded: true,
         lastOperation: 'init',
         lastError: 'Initialization failed. Running in memory-only degraded mode until a save succeeds.'
       });
-      this.state = applyStateGuards(createSeedData());
+      this.state = applyStateGuards(createEmptyState());
     }
   }
 
@@ -1193,6 +1235,24 @@ export class AppStore {
 
   async resetTodayForNextDay() {
     this.state.today = [];
+    await this.persist();
+    this.emit();
+  }
+
+  /**
+   * Replaces current data with the opt-in demo fixture set.
+   */
+  async loadSampleData() {
+    this.state = applyStateGuards(createDemoSeedData());
+    await this.persist();
+    this.emit();
+  }
+
+  /**
+   * Hard-resets all local application data to the production-safe defaults.
+   */
+  async resetAllLocalData() {
+    this.state = applyStateGuards(createEmptyState());
     await this.persist();
     this.emit();
   }
