@@ -227,6 +227,12 @@ function bindGlobalEvents() {
       return;
     }
 
+    const snoozeButton = event.target.closest('[data-action="snooze"]');
+    if (snoozeButton) {
+      await store.toggleSnoozeInbox(snoozeButton.dataset.id);
+      return;
+    }
+
     const addTodayButton = event.target.closest('[data-add-today]');
     if (addTodayButton) {
       await store.addToToday(addTodayButton.dataset.bucket, addTodayButton.dataset.addToday);
@@ -280,10 +286,33 @@ function bindGlobalEvents() {
       } else if (action === 'close-day') {
         const result = await store.closeDay();
         if (!result.ok) {
-          window.alert(`Close blocked: add update notes for ${result.missing.length} incomplete item(s) first.`);
+          const blockerCounts = {
+            missingTodayNotes: result.readiness?.missingTodayNotes?.length || 0,
+            unprocessedInbox: result.readiness?.unprocessedInbox?.length || 0,
+            snoozedInbox: result.readiness?.snoozedInbox?.length || 0
+          };
+
+          if (blockerCounts.missingTodayNotes) {
+            window.alert(`Close blocked: add update notes for ${blockerCounts.missingTodayNotes} incomplete Today item(s).`);
+          } else if (blockerCounts.snoozedInbox) {
+            window.alert(`Close blocked: unsnooze and resolve ${blockerCounts.snoozedInbox} snoozed inbox item(s).`);
+          } else if (blockerCounts.unprocessedInbox) {
+            window.alert(`Close blocked: process or archive ${blockerCounts.unprocessedInbox} inbox item(s).`);
+          } else {
+            window.alert('Close blocked: review day-end blockers in the Close checklist.');
+          }
         } else {
           window.alert('Day closed. Daily Log saved and Today plan reset.');
         }
+      }
+      return;
+    }
+
+    const closeResolveButton = event.target.closest('[data-close-resolve]');
+    if (closeResolveButton) {
+      if (closeResolveButton.dataset.closeResolve === 'open-capture') {
+        uiState.captureTab = 'unprocessed';
+        goTo('/capture');
       }
       return;
     }

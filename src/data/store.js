@@ -6,7 +6,7 @@ const STATE_SCHEMA_VERSION = 2;
 const STAMPED_FIELD_CONTAINER_KEY = '_fields';
 
 const MUTABLE_FIELDS_BY_COLLECTION = {
-  inbox: ['raw', 'type', 'archived', 'processedType', 'processedAt'],
+  inbox: ['raw', 'type', 'archived', 'processedType', 'processedAt', 'snoozed'],
   today: ['title', 'status', 'bucket', 'execution', 'due', 'scheduled', 'priority', 'context'],
   tasks: ['title', 'status', 'due', 'scheduled', 'priority', 'context'],
   meetings: ['title', 'time', 'meetingType', 'agenda', 'notes', 'due', 'scheduled', 'priority', 'context'],
@@ -38,10 +38,10 @@ const IMPORTABLE_COLLECTIONS = [
 function createSeedData() {
   return {
     inbox: [
-      { id: 'in_1', raw: 'Follow up with @Mina on launch metrics tomorrow', type: 'follow-up', archived: false },
-      { id: 'in_2', raw: 'Book 1:1 with @Harper #Roadmap do:2026-02-18', type: 'meeting', archived: false },
-      { id: 'in_3', raw: 'Sketch decision log format for team', type: 'task', archived: false },
-      { id: 'in_4', raw: 'Archive old status note', type: 'note', archived: true }
+      { id: 'in_1', raw: 'Follow up with @Mina on launch metrics tomorrow', type: 'follow-up', archived: false, snoozed: false },
+      { id: 'in_2', raw: 'Book 1:1 with @Harper #Roadmap do:2026-02-18', type: 'meeting', archived: false, snoozed: false },
+      { id: 'in_3', raw: 'Sketch decision log format for team', type: 'task', archived: false, snoozed: false },
+      { id: 'in_4', raw: 'Archive old status note', type: 'note', archived: true, snoozed: false }
     ],
     suggestions: {
       must: [
@@ -497,7 +497,8 @@ export class AppStore {
       id: `in_${Date.now()}`,
       raw,
       type: 'unknown',
-      archived: false
+      archived: false,
+      snoozed: false
     };
     stampEntityMutableFields(item, MUTABLE_FIELDS_BY_COLLECTION.inbox, deviceId, now);
     this.state.inbox.unshift(item);
@@ -511,6 +512,17 @@ export class AppStore {
 
     const nextArchived = !getStampedValue(item, 'archived', item.archived);
     updateStampedField(item, 'archived', nextArchived, getDeviceId());
+    await this.persist();
+    this.emit();
+  }
+
+  async toggleSnoozeInbox(id) {
+    const item = this.state.inbox.find((entry) => entry.id === id);
+    if (!item) return;
+
+    // Snooze is a lightweight inbox state used to intentionally postpone processing.
+    const nextSnoozed = !getStampedValue(item, 'snoozed', item.snoozed || false);
+    updateStampedField(item, 'snoozed', nextSnoozed, getDeviceId());
     await this.persist();
     this.emit();
   }
@@ -643,6 +655,7 @@ export class AppStore {
 
     // Archive the source item after successful conversion to preserve inbox provenance.
     updateStampedField(inboxItem, 'archived', true, deviceId, now);
+    updateStampedField(inboxItem, 'snoozed', false, deviceId, now);
     updateStampedField(inboxItem, 'processedType', resolvedType, deviceId, now);
     updateStampedField(inboxItem, 'processedAt', provenance.processedAt, deviceId, now);
 
@@ -758,6 +771,34 @@ export class AppStore {
     };
   }
 
+  /**
+   * Returns close-day blockers grouped by category so callers can render actionable guidance.
+   */
+  validateCloseReadiness() {
+    const todayValidation = this.validateIncompleteTodayNotes();
+
+    const inboxCandidates = this.state.inbox.filter((item) => {
+      const archived = getStampedValue(item, 'archived', item.archived);
+      return !archived;
+    });
+
+    // Inbox closure rule: every unarchived inbox row must either be processed or archived.
+    const unprocessedInbox = inboxCandidates.filter((item) => {
+      const processedAt = getStampedValue(item, 'processedAt', item.processedAt || '');
+      return !processedAt;
+    });
+
+    // Snoozed rows are highlighted separately so the UI can explain why these still block close.
+    const snoozedInbox = unprocessedInbox.filter((item) => getStampedValue(item, 'snoozed', item.snoozed || false));
+
+    return {
+      valid: todayValidation.valid && unprocessedInbox.length === 0,
+      missingTodayNotes: todayValidation.missing,
+      unprocessedInbox,
+      snoozedInbox
+    };
+  }
+
   createDailyLogSnapshot() {
     const planned = this.state.today.map(normalizeTodayExecution);
     const completed = planned.filter((item) => isTodayItemComplete(item));
@@ -796,9 +837,25 @@ export class AppStore {
   }
 
   async closeDay() {
-    const validation = this.validateIncompleteTodayNotes();
-    if (!validation.valid) {
-      return { ok: false, reason: 'missing_updates', missing: validation.missing };
+    const readiness = this.validateCloseReadiness();
+    if (!readiness.valid) {
+      const blockers = [];
+      if (readiness.missingTodayNotes.length) {
+        blockers.push({ type: 'missing_today_notes', items: readiness.missingTodayNotes });
+      }
+      if (readiness.unprocessedInbox.length) {
+        blockers.push({ type: 'unprocessed_inbox', items: readiness.unprocessedInbox });
+      }
+      if (readiness.snoozedInbox.length) {
+        blockers.push({ type: 'snoozed_inbox', items: readiness.snoozedInbox });
+      }
+
+      return {
+        ok: false,
+        reason: 'close_blocked',
+        blockers,
+        readiness
+      };
     }
 
     // Guardrail: enforce update-note validation before wiping Today so incomplete context isn't permanently lost.
