@@ -105,6 +105,14 @@ Follow-ups surface in:
 3. Confirm the destructive-action warning.
 4. Review the in-app success/error status message shown in the top bar.
 
+### Persistence degraded mode (reliability feedback)
+- If IndexedDB read/write operations fail at startup or during use, the app enters a **degraded mode** and shows a warning banner in the top bar.
+- Degraded mode means the app may still run in memory for the current tab session, but recent changes are not guaranteed to survive refresh/close until persistence recovers.
+- Core write workflows (capture, inbox processing, and update-note saves) now protect UX integrity by reverting optimistic in-memory changes if local persistence fails.
+- Console diagnostics include contextual operation names (`init`, `get`, `put`) so developers can quickly inspect failure points.
+- The IndexedDB wrapper retries transient transaction failures automatically for safe operations (`get` and `put`) before surfacing a hard failure.
+- While degraded mode is active, keep the tab open and use **Export** as soon as available to create a manual backup snapshot.
+
 ### State schema migration expectations
 - Persisted IndexedDB records now store a versioned payload envelope: `payload.schemaVersion` + `payload.collections`.
 - App startup runs ordered migrations from the stored schema version to the current schema before assigning in-memory state.

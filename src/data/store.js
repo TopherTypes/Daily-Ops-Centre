@@ -519,12 +519,39 @@ export class AppStore {
     this.listeners = new Set();
     this.startupRolloverNotice = null;
     this.migrationWarnings = [];
+    this.persistence = {
+      degraded: false,
+      lastOperation: 'init',
+      lastError: ''
+    };
+  }
+
+  /**
+   * Stores persistence health for top-bar diagnostics and operator awareness.
+   */
+  setPersistenceStatus(partial) {
+    this.persistence = { ...this.persistence, ...partial };
+  }
+
+  getPersistenceStatus() {
+    return { ...this.persistence };
+  }
+
+  logPersistenceDiagnostic(operation, error, context = {}) {
+    const message = error instanceof Error ? error.message : String(error || 'Unknown persistence error');
+    console.error(`[AppStore:${operation}] persistence failure.`, {
+      operation,
+      message,
+      errorName: error?.name || 'unknown',
+      context
+    });
   }
 
   async init() {
+    const now = new Date();
+    const currentLocalDate = getCurrentLocalIsoDate(now);
+
     try {
-      const now = new Date();
-      const currentLocalDate = getCurrentLocalIsoDate(now);
       const ready = await this.db.init();
       let migrationResult = migrateState({
         schemaVersion: STATE_SCHEMA_VERSION,
@@ -536,9 +563,18 @@ export class AppStore {
       });
 
       if (ready) {
-        const snapshot = await this.db.get('wireframe-state');
-        if (snapshot?.payload) {
-          migrationResult = migrateState(snapshot);
+        try {
+          const snapshot = await this.db.get('wireframe-state');
+          if (snapshot?.payload) {
+            migrationResult = migrateState(snapshot);
+          }
+        } catch (error) {
+          this.logPersistenceDiagnostic('get', error, { key: 'wireframe-state' });
+          this.setPersistenceStatus({
+            degraded: true,
+            lastOperation: 'get',
+            lastError: 'Stored state could not be read. Running with in-memory state until writes recover.'
+          });
         }
       }
 
@@ -550,6 +586,11 @@ export class AppStore {
       }
 
       this.ensureCollections();
+      this.setPersistenceStatus({
+        degraded: this.persistence.degraded,
+        lastOperation: 'init',
+        lastError: this.persistence.lastError
+      });
 
       const rolloverResult = this.applyStartupDayRollover(currentLocalDate, now);
       // Persist date/rollover outcomes immediately so refreshes are deterministic.
@@ -558,7 +599,12 @@ export class AppStore {
       }
     } catch (error) {
       this.migrationWarnings = ['Initialization failed. Using in-memory seeded state.'];
-      console.warn('State initialization failed; continuing with in-memory data.', error);
+      this.logPersistenceDiagnostic('init', error, { schemaVersion: STATE_SCHEMA_VERSION });
+      this.setPersistenceStatus({
+        degraded: true,
+        lastOperation: 'init',
+        lastError: 'Initialization failed. Running in memory-only degraded mode until a save succeeds.'
+      });
       this.state = applyStateGuards(createSeedData());
     }
   }
@@ -711,20 +757,50 @@ export class AppStore {
   }
 
   async persist() {
-    try {
-      await this.db.put({
-        id: 'wireframe-state',
+    const record = {
+      id: 'wireframe-state',
+      schemaVersion: STATE_SCHEMA_VERSION,
+      deviceId: getDeviceId(),
+      payload: {
         schemaVersion: STATE_SCHEMA_VERSION,
-        deviceId: getDeviceId(),
-        payload: {
-          schemaVersion: STATE_SCHEMA_VERSION,
-          collections: this.state
-        },
-        updatedAt: Date.now()
+        collections: this.state
+      },
+      updatedAt: Date.now()
+    };
+
+    try {
+      await this.db.put(record);
+      this.setPersistenceStatus({
+        degraded: false,
+        lastOperation: 'put',
+        lastError: ''
       });
-    } catch {
-      // Wireframe mode tolerates persistence failures.
+      return { ok: true };
+    } catch (error) {
+      this.logPersistenceDiagnostic('put', error, { key: record.id });
+      const failedMessage = 'Unable to save changes locally. Keep this tab open and export a backup once persistence recovers.';
+      this.setPersistenceStatus({
+        degraded: true,
+        lastOperation: 'put',
+        lastError: failedMessage
+      });
+      return { ok: false, error: new Error(failedMessage), cause: error };
     }
+  }
+
+  /**
+   * Persists an optimistic mutation and reverts memory if the write fails.
+   */
+  async commitStateMutation(previousState, operationName) {
+    const persistResult = await this.persist();
+    if (!persistResult.ok) {
+      this.state = previousState;
+      this.emit();
+      throw new Error(`${operationName} failed because local persistence is unavailable.`);
+    }
+
+    this.emit();
+    return true;
   }
 
   async addInboxItem(raw) {
@@ -738,9 +814,9 @@ export class AppStore {
       snoozed: false
     };
     stampEntityMutableFields(item, MUTABLE_FIELDS_BY_COLLECTION.inbox, deviceId, now);
+    const previousState = structuredClone(this.state);
     this.state.inbox.unshift(item);
-    await this.persist();
-    this.emit();
+    await this.commitStateMutation(previousState, 'capture');
   }
 
   async toggleArchiveInbox(id) {
@@ -826,6 +902,7 @@ export class AppStore {
    */
   async processInboxItem(inboxId, targetType, fields = {}) {
     this.ensureCollections();
+    const previousState = structuredClone(this.state);
 
     const inboxItem = this.state.inbox.find((entry) => entry.id === inboxId);
     if (!inboxItem) return;
@@ -920,8 +997,7 @@ export class AppStore {
     updateStampedField(inboxItem, 'processedType', resolvedType, deviceId, now);
     updateStampedField(inboxItem, 'processedAt', provenance.processedAt, deviceId, now);
 
-    await this.persist();
-    this.emit();
+    await this.commitStateMutation(previousState, 'process');
   }
 
   async addToToday(bucket, suggestionId) {
@@ -1016,6 +1092,7 @@ export class AppStore {
   }
 
   async addTodayUpdateNote(id, noteText) {
+    const previousState = structuredClone(this.state);
     const note = (noteText || '').trim();
     if (!note) return;
 
@@ -1034,8 +1111,7 @@ export class AppStore {
     this.state.today[index] = next;
 
     // Persistence expectation: notes are workflow evidence and must be saved with each write.
-    await this.persist();
-    this.emit();
+    await this.commitStateMutation(previousState, 'update note');
   }
 
   getIncompleteTodayItems() {
