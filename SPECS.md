@@ -148,7 +148,9 @@ Storage:
 
 Backup:
 - Export JSON of full dataset.
-- Import merges by entity id and per-field merge rules.
+- ✅ Implemented: import merges entities by id and resolves mutable stamped fields with latest `updatedAt` wins.
+- ✅ Implemented: local schema migration upgrades legacy records to stamped mutable fields on load/import.
+- ⏳ Future: explicit delete/tombstone merge behavior for archival across devices.
 
 ## Non-goals (v1)
 - calendar integration
