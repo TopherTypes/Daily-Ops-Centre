@@ -31,7 +31,7 @@ function processingFields(item) {
           ['project', 'Project'],
           ['followup', 'Follow-up'],
           ['note', 'Note']
-        ].map(([value, label]) => `<button class="inline-button" data-process-target="${value}" data-id="${item.id}" type="button">${label}</button>`).join('')}
+        ].map(([value, label]) => `<button class="inline-button btn-secondary" data-process-target="${value}" data-id="${item.id}" type="button">${label}</button>`).join('')}
       </div>
       <div class="inline-fields">
         <input class="input" name="people" data-process-field="people" aria-label="People tokens" placeholder="People (@name, @name2)" value="${escapeHtml(peopleValue)}" />
@@ -68,40 +68,40 @@ export function renderCapture(state, uiState) {
     <section>
       <div class="view-header">
         <h1>Capture / Inbox</h1>
-        <p class="muted">Enter to capture, then process inline.</p>
+        <p class="muted">Capture fast, process inline, and keep your inbox moving.</p>
       </div>
       <form data-capture-form class="inline-fields" aria-label="Capture item form">
         <input class="input" name="captureInput" aria-label="Capture input" required placeholder="Capture anything quickly…" />
-        <button class="button" type="submit">Capture</button>
+        <button class="button btn-primary" type="submit">Capture</button>
       </form>
-      <div class="tabs" style="margin:0.5rem 0;">
-        <button data-tab="all" class="button">All inbox</button>
-        <button data-tab="unprocessed" class="button">Unprocessed</button>
-        <button data-tab="processed" class="button">Processed</button>
-        <button data-tab="archived" class="button">Archived</button>
+      <div class="tabs" style="margin:0.5rem 0;" role="tablist" aria-label="Inbox views">
+        <button data-tab="all" class="tab ${activeTab === 'all' ? 'active' : ''}" role="tab" aria-selected="${activeTab === 'all'}">All inbox</button>
+        <button data-tab="unprocessed" class="tab ${activeTab === 'unprocessed' ? 'active' : ''}" role="tab" aria-selected="${activeTab === 'unprocessed'}">Unprocessed</button>
+        <button data-tab="processed" class="tab ${activeTab === 'processed' ? 'active' : ''}" role="tab" aria-selected="${activeTab === 'processed'}">Processed</button>
+        <button data-tab="archived" class="tab ${activeTab === 'archived' ? 'active' : ''}" role="tab" aria-selected="${activeTab === 'archived'}">Archived</button>
       </div>
       <div class="row-list">
         ${inboxItems.map((item) => `
-          <article class="row" tabindex="0">
+          <article class="row" tabindex="0" data-nav-row>
             <div class="row-main">
               <div class="inline-fields">
-                <span class="chip">${escapeHtml(item.type)}</span>
-                ${item.snoozed ? '<span class="chip">snoozed</span>' : ''}
-                ${item.processedAt ? `<span class="chip">processed → ${escapeHtml(item.processedType || 'task')}</span>` : ''}
+                <span class="chip badge-accent">${escapeHtml(item.type)}</span>
+                ${item.snoozed ? '<span class="chip badge-warning">snoozed</span>' : ''}
+                ${item.processedAt ? `<span class="chip badge-success">processed → ${escapeHtml(item.processedType || 'task')}</span>` : ''}
                 <strong>${escapeHtml(item.raw)}</strong>
               </div>
               <div class="row-meta muted">id: ${item.id}</div>
               ${uiState.processingInboxId === item.id ? processingFields(item) : ''}
             </div>
             <div class="inline-actions">
-              <button class="inline-button" data-action="process" data-id="${item.id}" type="button">Process</button>
-              <button class="inline-button" data-action="snooze" data-id="${item.id}" type="button">${item.snoozed ? 'Unsnooze' : 'Snooze'}</button>
-              <button class="inline-button" data-action="archive" data-id="${item.id}" type="button">${item.archived ? 'Unarchive' : 'Archive'}</button>
-              ${item.processedEntityId && LIBRARY_SECTION_BY_PROCESSED_TYPE[item.processedType] ? `<a class="inline-button" href="#/library/${LIBRARY_SECTION_BY_PROCESSED_TYPE[item.processedType]}/${escapeHtml(item.processedEntityId)}">Open in Library</a>` : ''}
-              <button class="inline-button" data-request-delete="inbox" data-delete-mode="soft" data-id="${item.id}" type="button">Request delete</button>
+              <button class="inline-button btn-primary" data-action="process" data-id="${item.id}" type="button">Process</button>
+              <button class="inline-button btn-secondary" data-action="snooze" data-id="${item.id}" type="button">${item.snoozed ? 'Unsnooze' : 'Snooze'}</button>
+              <button class="inline-button btn-secondary" data-action="archive" data-id="${item.id}" type="button">${item.archived ? 'Unarchive' : 'Archive'}</button>
+              ${item.processedEntityId && LIBRARY_SECTION_BY_PROCESSED_TYPE[item.processedType] ? `<a class="inline-button btn-ghost" href="#/library/${LIBRARY_SECTION_BY_PROCESSED_TYPE[item.processedType]}/${escapeHtml(item.processedEntityId)}">Open in Library</a>` : ''}
+              <button class="inline-button btn-danger" data-request-delete="inbox" data-delete-mode="soft" data-id="${item.id}" type="button">Request delete</button>
             </div>
           </article>
-        `).join('') || '<p class="muted">No items in this tab.</p>'}
+        `).join('') || '<p class="empty-state">No items in this tab.</p>'}
       </div>
     </section>
   `;

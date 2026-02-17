@@ -18,8 +18,11 @@ const uiState = {
   backupNotice: null,
   startupRolloverNotice: null,
   persistenceNotice: null,
-  storageActionNotice: null
+  storageActionNotice: null,
+  toasts: []
 };
+
+const TOAST_TIMEOUT_MS = 3200;
 
 // Tracks dialog-specific accessibility state across route transitions/rerenders.
 const modalState = {
@@ -125,7 +128,17 @@ function getStorageStatusMeta(status) {
 function setBackupNotice(type, message) {
   // Global import/export notifications are displayed in the top bar so they are visible in every mode.
   uiState.backupNotice = { type, message };
+  enqueueToast(type, message);
   store.emit();
+}
+
+function enqueueToast(type, message) {
+  const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  uiState.toasts = [...uiState.toasts, { id, type, message }].slice(-4);
+  window.setTimeout(() => {
+    uiState.toasts = uiState.toasts.filter((toast) => toast.id !== id);
+    store.emit();
+  }, TOAST_TIMEOUT_MS);
 }
 
 function syncPersistenceNotice() {
@@ -149,8 +162,10 @@ async function retryStorageInitializationFromUi() {
   const result = await store.retryStorageInitialization();
   if (result.ok) {
     uiState.storageActionNotice = { type: 'ok', message: 'Storage recovered. Local persistence is ready.' };
+    enqueueToast('ok', 'Storage recovered. Local persistence is ready.');
   } else {
     uiState.storageActionNotice = { type: 'warn', message: 'Storage retry failed. Keep this tab open and export a backup.' };
+    enqueueToast('warn', 'Storage retry failed. Keep this tab open and export a backup.');
   }
 
   syncPersistenceNotice();
@@ -258,24 +273,28 @@ function renderShell(state) {
     <div class="app-shell">
       <header class="topbar">
         <nav class="mode-nav" aria-label="Mode navigation">
-          ${['capture', 'plan', 'execute', 'close'].map((item) => `<a class="mode-link ${mode === item ? 'active' : ''}" href="#/${item}">${item[0].toUpperCase() + item.slice(1)}</a>`).join('')}
-          <a class="mode-link library" href="#/library/tasks">Library</a>
+          <div class="mode-switch" role="tablist" aria-label="Primary modes">
+            ${['capture', 'plan', 'execute', 'close'].map((item) => `<a class="mode-link ${mode === item ? 'active' : ''}" role="tab" aria-selected="${mode === item ? 'true' : 'false'}" href="#/${item}">${item[0].toUpperCase() + item.slice(1)}</a>`).join('')}
+          </div>
+          <a class="mode-link library btn-secondary" href="#/library/tasks">Library</a>
           <span class="muted">Device: ${getDeviceId()}</span>
           <span class="storage-badge ${storageMeta.className}" data-storage-badge>${storageMeta.label}</span>
           <div class="backup-controls">
-            <button class="button" type="button" data-backup-action="export">Export</button>
-            <button class="button" type="button" data-backup-action="import">Import</button>
+            <button class="button btn-secondary" type="button" data-backup-action="export">Export</button>
+            <button class="button btn-secondary" type="button" data-backup-action="import">Import</button>
             <input class="hidden-file-input" type="file" accept="application/json,.json" data-import-file-input />
           </div>
         </nav>
-        <p class="status-text ${uiState.backupNotice?.type || ''}" role="status" aria-live="polite">${uiState.backupNotice?.message || 'Backup tools are always available in this top bar.'}</p>
-        ${uiState.persistenceNotice ? `<p class="status-text ${uiState.persistenceNotice.type}" role="status" aria-live="polite" data-persistence-status>${uiState.persistenceNotice.message} ${state.storageStatus === 'degraded' ? '<button class="button" type="button" data-storage-retry style="margin-left:0.45rem;">Retry storage</button>' : ''}</p>` : ''}
-        ${uiState.storageActionNotice ? `<p class="status-text ${uiState.storageActionNotice.type}" role="status" aria-live="polite">${uiState.storageActionNotice.message}</p>` : ''}
+        <div class="status-stream">
+          <p class="status-text ${uiState.backupNotice?.type || ''}" role="status" aria-live="polite">${uiState.backupNotice?.message || 'Backup tools are always available in this top bar.'}</p>
+          ${uiState.persistenceNotice ? `<p class="status-text ${uiState.persistenceNotice.type}" role="status" aria-live="polite" data-persistence-status>${uiState.persistenceNotice.message} ${state.storageStatus === 'degraded' ? '<button class="button btn-secondary" type="button" data-storage-retry style="margin-left:0.45rem;">Retry storage</button>' : ''}</p>` : ''}
+          ${uiState.storageActionNotice ? `<p class="status-text ${uiState.storageActionNotice.type}" role="status" aria-live="polite">${uiState.storageActionNotice.message}</p>` : ''}
+        </div>
         ${uiState.startupRolloverNotice ? `
           <p class="status-text warn" role="status" aria-live="polite" data-startup-rollover-banner>
             Today was reset for a new day (${uiState.startupRolloverNotice.previousDate} → ${uiState.startupRolloverNotice.currentDate}).
             ${uiState.startupRolloverNotice.recoveredItemCount ? `Saved ${uiState.startupRolloverNotice.recoveredItemCount} prior item(s) to Daily Logs.` : 'No prior Today items were carried over.'}
-            <button class="button" type="button" data-dismiss-rollover-banner style="margin-left:0.6rem;">Dismiss</button>
+            <button class="button btn-secondary" type="button" data-dismiss-rollover-banner style="margin-left:0.6rem;">Dismiss</button>
           </p>
         ` : ''}
         <aside class="shortcut-panel" aria-label="Keyboard shortcut hints">
@@ -286,7 +305,7 @@ function renderShell(state) {
           <form data-quick-capture class="quick-row" aria-label="Global quick capture">
             <label for="global-capture" class="muted">Quick capture</label>
             <input id="global-capture" name="globalCapture" class="input" placeholder="Capture from any mode..." required />
-            <button class="button" type="submit">Save</button>
+            <button class="button btn-primary" type="submit">Save</button>
           </form>
         `}
       </header>
@@ -296,10 +315,13 @@ function renderShell(state) {
       <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="library-dialog-title" tabindex="-1" data-library-modal-panel>
         <div class="view-header" style="margin-bottom:0.65rem;">
           <h2 id="library-dialog-title">Entity Library</h2>
-          <button class="button" type="button" data-close-library>Close</button>
+          <button class="button btn-secondary" type="button" data-close-library>Close</button>
         </div>
         ${renderLibrary(state, routeParts)}
       </section>
+    </div>
+    <div class="toast-region" role="status" aria-live="polite" aria-label="Notifications">
+      ${uiState.toasts.map((toast) => `<div class="toast ${toast.type || ''}">${toast.message}</div>`).join('')}
     </div>
   `;
 }
@@ -563,17 +585,18 @@ function bindGlobalEvents() {
       if (action === 'validate-notes') {
         const validation = store.validateIncompleteTodayNotes();
         if (!validation.valid) {
-          window.alert(`Missing update note for ${validation.missing.length} incomplete item(s).`);
+          enqueueToast('warn', `Missing update note for ${validation.missing.length} incomplete item(s).`);
         } else {
-          window.alert('All incomplete Today items have update notes.');
+          enqueueToast('ok', 'All incomplete Today items have update notes.');
         }
       } else if (action === 'generate-log') {
         await store.generateDailyLogSnapshot();
+        enqueueToast('ok', 'Daily log snapshot generated.');
       } else if (action === 'close-day') {
         const result = await store.closeDay();
         if (!result.ok) {
           if (result.reason === 'storage_degraded') {
-            window.alert(result.message || 'Close blocked: storage is degraded. Retry storage initialization first.');
+            enqueueToast('error', result.message || 'Close blocked: storage is degraded. Retry storage initialization first.');
             return;
           }
           const blockerCounts = {
@@ -583,16 +606,16 @@ function bindGlobalEvents() {
           };
 
           if (blockerCounts.missingTodayNotes) {
-            window.alert(`Close blocked: add update notes for ${blockerCounts.missingTodayNotes} incomplete Today item(s).`);
+            enqueueToast('warn', `Close blocked: add update notes for ${blockerCounts.missingTodayNotes} incomplete Today item(s).`);
           } else if (blockerCounts.snoozedInbox) {
-            window.alert(`Close blocked: unsnooze and resolve ${blockerCounts.snoozedInbox} snoozed inbox item(s).`);
+            enqueueToast('warn', `Close blocked: unsnooze and resolve ${blockerCounts.snoozedInbox} snoozed inbox item(s).`);
           } else if (blockerCounts.unprocessedInbox) {
-            window.alert(`Close blocked: process or archive ${blockerCounts.unprocessedInbox} inbox item(s).`);
+            enqueueToast('warn', `Close blocked: process or archive ${blockerCounts.unprocessedInbox} inbox item(s).`);
           } else {
-            window.alert('Close blocked: review day-end blockers in the Close checklist.');
+            enqueueToast('warn', 'Close blocked: review day-end blockers in the Close checklist.');
           }
         } else {
-          window.alert('Day closed. Daily Log saved and Today plan reset.');
+          enqueueToast('ok', 'Day closed. Daily Log saved and Today plan reset.');
         }
       } else if (action === 'load-sample-data') {
         // Explicit confirmation keeps demo fixtures opt-in for production users.
@@ -600,14 +623,14 @@ function bindGlobalEvents() {
         if (!confirmed) return;
 
         await store.loadSampleData();
-        window.alert('Sample data loaded. Demo mode is now active for this local dataset.');
+        enqueueToast('ok', 'Sample data loaded. Demo mode is now active for this local dataset.');
       } else if (action === 'reset-all-local-data') {
         // Reset is intentionally hard-confirmed because this clears every local collection.
         const confirmed = window.confirm('Reset all local data? This permanently clears your local records on this device.');
         if (!confirmed) return;
 
         await store.resetAllLocalData();
-        window.alert('All local data reset. The app is now in production-safe empty mode.');
+        enqueueToast('ok', 'All local data reset. The app is now in production-safe empty mode.');
       }
       return;
     }
