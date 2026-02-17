@@ -20,13 +20,14 @@ function renderExecutionMeta(item) {
   return `${base}${noteText}`;
 }
 
+// Execute rows opt into shared keyboard navigation via data-nav attributes.
 function renderGroup(name, rows) {
   return `
     <section class="type-group">
       <h3>${name}</h3>
-      <div class="row-list" style="margin-top:0.35rem;">
+      <div class="row-list" data-nav-list="execute" style="margin-top:0.35rem;">
         ${rows.map((item) => `
-          <article class="row">
+          <article class="row" tabindex="0" data-nav-row data-row-type="execute-item" data-today-id="${item.id}">
             <div class="row-main">
               <strong>${escapeHtml(item.title)}</strong>
               <div class="row-meta muted">${escapeHtml(renderExecutionMeta(item))}</div>

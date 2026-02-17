@@ -95,6 +95,10 @@ function renderShell(state) {
           </div>
         </nav>
         <p class="status-text ${uiState.backupNotice?.type || ''}" role="status" aria-live="polite">${uiState.backupNotice?.message || 'Backup tools are always available in this top bar.'}</p>
+        <aside class="shortcut-panel" aria-label="Keyboard shortcut hints">
+          <strong>Shortcuts:</strong>
+          <span class="muted">C/P/E/L switch modes · Ctrl+Enter submits focused form · ↑/↓ move list focus · Plan: M/S/K sets Must/Should/Could</span>
+        </aside>
         ${hideQuickCapture ? '' : `
           <form data-quick-capture class="quick-row" aria-label="Global quick capture">
             <label for="global-capture" class="muted">Quick capture</label>
@@ -128,6 +132,48 @@ function getProcessingFields(button) {
     fields[node.dataset.processField] = node.value?.trim() || '';
   }
   return fields;
+}
+
+
+function isTypingTarget(node) {
+  if (!node) return false;
+  if (node.closest('[contenteditable="true"]')) return true;
+  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(node.tagName);
+}
+
+function getFocusableRows(scope = document) {
+  return [...scope.querySelectorAll('[data-nav-row]')]
+    .filter((row) => row.offsetParent !== null && !row.hasAttribute('disabled') && row.getAttribute('aria-hidden') !== 'true');
+}
+
+function focusAdjacentRow(currentRow, direction) {
+  const container = currentRow.closest('[data-nav-list]') || document;
+  const rows = getFocusableRows(container);
+  const currentIndex = rows.indexOf(currentRow);
+  if (currentIndex === -1) return;
+
+  const targetIndex = direction === 'next'
+    ? Math.min(rows.length - 1, currentIndex + 1)
+    : Math.max(0, currentIndex - 1);
+  const nextRow = rows[targetIndex];
+  if (!nextRow || nextRow === currentRow) return;
+
+  nextRow.focus();
+}
+
+async function applyPlanSuggestionBucketFromShortcut(event) {
+  if (uiState.route !== '/plan') return false;
+
+  const bucketByKey = { m: 'must', s: 'should', k: 'could' };
+  const nextBucket = bucketByKey[event.key.toLowerCase()];
+  if (!nextBucket) return false;
+
+  const focusedRow = document.activeElement?.closest?.('[data-row-type="plan-suggestion"]');
+  if (!focusedRow) return false;
+
+  event.preventDefault();
+  await store.setSuggestionBucket(focusedRow.dataset.suggestionId, nextBucket);
+  return true;
 }
 
 function bindGlobalEvents() {
@@ -323,9 +369,33 @@ function bindGlobalEvents() {
     }
   });
 
-  document.addEventListener('keydown', (event) => {
-    const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
+  document.addEventListener('keydown', async (event) => {
+    const activeElement = document.activeElement;
+    const typing = isTypingTarget(activeElement);
+
+    // Ctrl/Cmd + Enter always submits the currently focused form for fast keyboard workflows.
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      const activeForm = activeElement?.closest?.('form');
+      if (activeForm) {
+        event.preventDefault();
+        activeForm.requestSubmit();
+      }
+      return;
+    }
+
+    // Never trigger navigation shortcuts while users are actively typing.
     if (typing && event.key !== 'Escape') return;
+
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      const focusedRow = activeElement?.closest?.('[data-nav-row]');
+      if (focusedRow) {
+        event.preventDefault();
+        focusAdjacentRow(focusedRow, event.key === 'ArrowDown' ? 'next' : 'prev');
+        return;
+      }
+    }
+
+    if (await applyPlanSuggestionBucketFromShortcut(event)) return;
 
     const map = { c: '/capture', p: '/plan', e: '/execute', l: '/close' };
     const route = map[event.key.toLowerCase()];

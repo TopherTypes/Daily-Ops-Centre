@@ -699,6 +699,30 @@ export class AppStore {
     this.emit();
   }
 
+  async setSuggestionBucket(id, nextBucket) {
+    const buckets = ['must', 'should', 'could'];
+    if (!buckets.includes(nextBucket)) return;
+
+    // Search each bucket and relocate the suggestion atomically when found.
+    let sourceBucket = null;
+    let sourceIndex = -1;
+    for (const bucket of buckets) {
+      const index = this.state.suggestions[bucket].findIndex((entry) => entry.id === id);
+      if (index !== -1) {
+        sourceBucket = bucket;
+        sourceIndex = index;
+        break;
+      }
+    }
+
+    if (!sourceBucket || sourceBucket === nextBucket) return;
+
+    const [entry] = this.state.suggestions[sourceBucket].splice(sourceIndex, 1);
+    this.state.suggestions[nextBucket].unshift(entry);
+    await this.persist();
+    this.emit();
+  }
+
   async setTodayStatus(id, status) {
     // Allowed status transitions for active work items.
     const allowedStatuses = ['not started', 'in progress', 'waiting', 'blocked', 'complete', 'cancelled', 'deferred', 'archived'];
