@@ -52,6 +52,8 @@ function createEmptyState() {
     meetings: [],
     followUps: [],
     dailyLogs: [],
+    // Storage state machine starts in loading and is transitioned during init/persist flows.
+    storageStatus: 'loading',
     isDemoMode: false,
     // Local-date heartbeat used to detect startup day rollovers in a timezone-safe way.
     lastActiveDate: toLocalIsoDate(now)
@@ -119,6 +121,8 @@ function createDemoSeedData() {
       }
     ],
     dailyLogs: [],
+    // Demo fixtures still rely on local IndexedDB, so this status is controlled by persistence transitions.
+    storageStatus: 'loading',
     isDemoMode: true,
     // Local-date heartbeat used to detect startup day rollovers in a timezone-safe way.
     lastActiveDate: toLocalIsoDate(now)
@@ -379,6 +383,10 @@ function applyStateGuards(state) {
     guarded.lastActiveDate = toLocalIsoDate(new Date());
   }
 
+  if (!['loading', 'ready', 'degraded'].includes(guarded.storageStatus)) {
+    guarded.storageStatus = 'loading';
+  }
+
   if (typeof guarded.isDemoMode !== 'boolean') {
     guarded.isDemoMode = false;
   }
@@ -626,6 +634,9 @@ export class AppStore {
     const now = new Date();
     const currentLocalDate = getCurrentLocalIsoDate(now);
 
+    // Transition: every initialization attempt explicitly re-enters loading before probing IndexedDB.
+    this.state.storageStatus = 'loading';
+
     try {
       const ready = await this.db.init();
       let migrationResult = migrateState({
@@ -650,7 +661,17 @@ export class AppStore {
             lastOperation: 'get',
             lastError: 'Stored state could not be read. Running with in-memory state until writes recover.'
           });
+          // Transition: IndexedDB read failure means we can continue in-memory, but persistence is degraded.
+          this.state.storageStatus = 'degraded';
         }
+      } else {
+        // Transition: browser does not expose IndexedDB; app remains usable but persistence is degraded.
+        this.state.storageStatus = 'degraded';
+        this.setPersistenceStatus({
+          degraded: true,
+          lastOperation: 'init',
+          lastError: 'IndexedDB is unavailable in this environment. Running in memory-only degraded mode.'
+        });
       }
 
       // Only assign in-memory state once migration and guard-fill pass.
@@ -661,6 +682,10 @@ export class AppStore {
       }
 
       this.ensureCollections();
+      if (!this.persistence.degraded) {
+        // Transition: init + read path completed without persistence failures.
+        this.state.storageStatus = 'ready';
+      }
       this.setPersistenceStatus({
         degraded: this.persistence.degraded,
         lastOperation: 'init',
@@ -681,6 +706,51 @@ export class AppStore {
         lastError: 'Initialization failed. Running in memory-only degraded mode until a save succeeds.'
       });
       this.state = applyStateGuards(createEmptyState());
+      // Transition: hard init failure always leaves the storage layer degraded.
+      this.state.storageStatus = 'degraded';
+    }
+  }
+
+  /**
+   * Retries the IndexedDB bootstrap without resetting user data.
+   *
+   * This is intended for top-bar recovery controls after browser storage
+   * permissions or quota conditions change mid-session.
+   */
+  async retryStorageInitialization() {
+    const previousStatus = this.state.storageStatus;
+    this.state.storageStatus = 'loading';
+    this.setPersistenceStatus({
+      degraded: true,
+      lastOperation: 'retry_init',
+      lastError: ''
+    });
+    this.emit();
+
+    try {
+      const ready = await this.db.init();
+      if (!ready) {
+        throw new Error('IndexedDB unavailable in this environment.');
+      }
+
+      this.state.storageStatus = 'ready';
+      this.setPersistenceStatus({
+        degraded: false,
+        lastOperation: 'retry_init',
+        lastError: ''
+      });
+      this.emit();
+      return { ok: true };
+    } catch (error) {
+      this.logPersistenceDiagnostic('retry_init', error, { previousStatus });
+      this.state.storageStatus = 'degraded';
+      this.setPersistenceStatus({
+        degraded: true,
+        lastOperation: 'retry_init',
+        lastError: 'Storage retry failed. Continue in-memory and export a backup before closing this tab.'
+      });
+      this.emit();
+      return { ok: false, error };
     }
   }
 
@@ -844,12 +914,17 @@ export class AppStore {
     };
 
     try {
-      await this.db.put(record);
+      const saved = await this.db.put(record);
+      if (!saved) {
+        throw new Error('IndexedDB write skipped because no active database connection is available.');
+      }
       this.setPersistenceStatus({
         degraded: false,
         lastOperation: 'put',
         lastError: ''
       });
+      // Transition: any successful write confirms local persistence is healthy again.
+      this.state.storageStatus = 'ready';
       return { ok: true };
     } catch (error) {
       this.logPersistenceDiagnostic('put', error, { key: record.id });
@@ -859,6 +934,8 @@ export class AppStore {
         lastOperation: 'put',
         lastError: failedMessage
       });
+      // Transition: write failure degrades storage because future mutations are at risk.
+      this.state.storageStatus = 'degraded';
       return { ok: false, error: new Error(failedMessage), cause: error };
     }
   }
@@ -1405,6 +1482,14 @@ export class AppStore {
   }
 
   async closeDay() {
+    if (this.state.storageStatus === 'degraded') {
+      return {
+        ok: false,
+        reason: 'storage_degraded',
+        message: 'Close day is blocked while persistence is degraded. Retry storage initialization first to avoid data loss.'
+      };
+    }
+
     const readiness = this.validateCloseReadiness();
     if (!readiness.valid) {
       const blockers = [];
