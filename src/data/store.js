@@ -17,7 +17,7 @@ const STATE_SCHEMA_VERSION = 3;
 const STAMPED_FIELD_CONTAINER_KEY = '_fields';
 
 const MUTABLE_FIELDS_BY_COLLECTION = {
-  inbox: ['raw', 'type', 'archived', 'deleted', 'deletedAt', 'processedType', 'processedAt', 'snoozed'],
+  inbox: ['raw', 'type', 'archived', 'deleted', 'deletedAt', 'processedType', 'processedEntityId', 'processedAt', 'snoozed'],
   today: ['title', 'status', 'bucket', 'execution', 'archived', 'deleted', 'deletedAt', 'due', 'scheduled', 'priority', 'context'],
   tasks: ['title', 'status', 'archived', 'deleted', 'deletedAt', 'due', 'scheduled', 'priority', 'context'],
   meetings: ['title', 'time', 'meetingType', 'agenda', 'notes', 'archived', 'deleted', 'deletedAt', 'due', 'scheduled', 'priority', 'context'],
@@ -1477,10 +1477,12 @@ export class AppStore {
     baseRecord.title = titleResult.value;
 
     // Keep conversion logic explicit per entity type so contributors can safely extend it.
+    let processedEntityId = '';
     if (resolvedType === 'task') {
       const nextTask = { ...baseRecord, status: 'backlog' };
       stampEntityMutableFields(nextTask, MUTABLE_FIELDS_BY_COLLECTION.tasks, deviceId, now);
       this.state.tasks.unshift(nextTask);
+      processedEntityId = nextTask.id;
     } else if (resolvedType === 'meeting') {
       const nextMeeting = {
         ...baseRecord,
@@ -1490,16 +1492,17 @@ export class AppStore {
       };
       stampEntityMutableFields(nextMeeting, MUTABLE_FIELDS_BY_COLLECTION.meetings, deviceId, now);
       this.state.meetings.unshift(nextMeeting);
+      processedEntityId = nextMeeting.id;
     } else if (resolvedType === 'person') {
       const personName = fields.title || personEntities[0]?.name || titleFromRaw(inboxRaw);
       const personNameResult = normalizeRequiredText(personName, 'name');
       if (!personNameResult.ok) return personNameResult;
-      this.findOrCreatePerson(personNameResult.value, provenance);
+      processedEntityId = this.findOrCreatePerson(personNameResult.value, provenance).id;
     } else if (resolvedType === 'project') {
       const projectName = fields.title || projectEntity?.name || titleFromRaw(inboxRaw);
       const projectNameResult = normalizeRequiredText(projectName, 'name');
       if (!projectNameResult.ok) return projectNameResult;
-      this.findOrCreateProject(projectNameResult.value, provenance);
+      processedEntityId = this.findOrCreateProject(projectNameResult.value, provenance).id;
     } else if (resolvedType === 'followup') {
       // Recipient-shape guard keeps follow-up completion logic safe from malformed recipient rows.
       const recipientsValidation = normalizeFollowUpRecipients(personEntities.map((person) => ({ personId: person.id, status: 'pending' })));
@@ -1512,30 +1515,65 @@ export class AppStore {
       };
       stampEntityMutableFields(nextFollowUp, MUTABLE_FIELDS_BY_COLLECTION.followUps, deviceId, now);
       this.state.followUps.unshift(nextFollowUp);
+      processedEntityId = nextFollowUp.id;
     } else if (resolvedType === 'reminder') {
       const nextReminder = { ...baseRecord, status: 'pending' };
       stampEntityMutableFields(nextReminder, MUTABLE_FIELDS_BY_COLLECTION.reminders, deviceId, now);
       this.state.reminders.unshift(nextReminder);
+      processedEntityId = nextReminder.id;
     } else if (resolvedType === 'note') {
       const nextNote = { ...baseRecord, body: inboxRaw };
       stampEntityMutableFields(nextNote, MUTABLE_FIELDS_BY_COLLECTION.notes, deviceId, now);
       this.state.notes.unshift(nextNote);
+      processedEntityId = nextNote.id;
     } else {
       const fallbackTask = { ...baseRecord, status: 'backlog' };
       stampEntityMutableFields(fallbackTask, MUTABLE_FIELDS_BY_COLLECTION.tasks, deviceId, now);
       this.state.tasks.unshift(fallbackTask);
+      processedEntityId = fallbackTask.id;
     }
 
-    // Archive the source item after successful conversion to preserve inbox provenance.
-    updateStampedField(inboxItem, 'archived', true, deviceId, now);
+    // Keep source capture visible in Inbox after conversion so users can quickly verify/edit outcomes.
     updateStampedField(inboxItem, 'snoozed', false, deviceId, now);
     updateStampedField(inboxItem, 'processedType', resolvedType, deviceId, now);
+    updateStampedField(inboxItem, 'processedEntityId', processedEntityId, deviceId, now);
     updateStampedField(inboxItem, 'processedAt', provenance.processedAt, deviceId, now);
 
     // Keep Plan dynamic immediately after inbox processing and conversion side effects.
     this.rebuildSuggestionsForDate(getCurrentLocalIsoDate());
 
     await this.commitStateMutation(previousState, 'process');
+    return ok();
+  }
+
+  /**
+   * Updates editable meeting fields from the Library detail panel.
+   *
+   * Keeping this write path explicit makes it easier to add validation as the
+   * meeting schema evolves.
+   */
+  async updateMeeting(meetingId, fields = {}) {
+    this.ensureCollections();
+    const previousState = structuredClone(this.state);
+
+    const idResult = validateId(meetingId, 'meetingId');
+    if (!idResult.ok) return idResult;
+
+    const meeting = this.state.meetings.find((entry) => entry.id === idResult.value && !isDeletedEntity(entry));
+    if (!meeting) return fail('MEETING_NOT_FOUND', 'Meeting not found or already deleted.', { meetingId });
+
+    const titleResult = normalizeRequiredText(fields.title || meeting.title || '', 'title', meeting.title || 'Untitled meeting');
+    if (!titleResult.ok) return titleResult;
+
+    const now = new Date().toISOString();
+    const deviceId = getDeviceId();
+    updateStampedField(meeting, 'title', titleResult.value, deviceId, now);
+    updateStampedField(meeting, 'time', fields.time || '', deviceId, now);
+    updateStampedField(meeting, 'meetingType', fields.meetingType || 'group', deviceId, now);
+    updateStampedField(meeting, 'agenda', fields.agenda || '', deviceId, now);
+    updateStampedField(meeting, 'notes', fields.notes || '', deviceId, now);
+
+    await this.commitStateMutation(previousState, 'update_meeting');
     return ok();
   }
 
