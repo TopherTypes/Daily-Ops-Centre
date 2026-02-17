@@ -99,14 +99,24 @@ function renderMeetings(state, selectedId) {
         <h3>Meeting detail</h3>
         ${selected ? `
           <form data-library-meeting-form data-id="${selected.id}" class="inline-fields" aria-label="Meeting detail edit form">
-            <input class="input" name="title" aria-label="Meeting title" value="${escapeHtml(selected.title || '')}" required />
-            <input class="input" name="time" aria-label="Meeting time" placeholder="HH:MM" value="${escapeHtml(selected.time || '')}" />
-            <select class="select" name="meetingType" aria-label="Meeting type">
+            <!-- Explicit labels keep the meeting edit form accessible and scannable in dense Library layouts. -->
+            <label class="muted" for="meeting-title-${selected.id}">Title</label>
+            <input id="meeting-title-${selected.id}" class="input" name="title" value="${escapeHtml(selected.title || '')}" required />
+
+            <label class="muted" for="meeting-time-${selected.id}">Time</label>
+            <input id="meeting-time-${selected.id}" class="input" name="time" placeholder="HH:MM" value="${escapeHtml(selected.time || '')}" />
+
+            <label class="muted" for="meeting-type-${selected.id}">Meeting type</label>
+            <select id="meeting-type-${selected.id}" class="select" name="meetingType">
               <option value="group" ${selected.meetingType !== 'one_to_one' ? 'selected' : ''}>group</option>
               <option value="one_to_one" ${selected.meetingType === 'one_to_one' ? 'selected' : ''}>one_to_one</option>
             </select>
-            <input class="input" name="agenda" aria-label="Meeting agenda" value="${escapeHtml(selected.agenda || '')}" />
-            <input class="input" name="notes" aria-label="Meeting notes" value="${escapeHtml(selected.notes || '')}" />
+
+            <label class="muted" for="meeting-agenda-${selected.id}">Agenda</label>
+            <input id="meeting-agenda-${selected.id}" class="input" name="agenda" value="${escapeHtml(selected.agenda || '')}" />
+
+            <label class="muted" for="meeting-notes-${selected.id}">Notes</label>
+            <input id="meeting-notes-${selected.id}" class="input" name="notes" value="${escapeHtml(selected.notes || '')}" />
             <button class="button" type="submit">Save meeting</button>
           </form>
           <div class="row-list" style="margin-top:0.4rem;">${groups.map((group) => `<article class="row"><strong>${escapeHtml(group.title)}</strong></article>`).join('') || '<p class="muted">No follow-ups.</p>'}</div>
