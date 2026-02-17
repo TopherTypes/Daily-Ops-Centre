@@ -161,5 +161,6 @@ Planned design:
 - Static hosting on GitHub Pages.
 
 See:
+- `MVP_LAUNCH_CHECKLIST.md` for pre-release launch gating and signoff criteria
 - `SPECS.md` for detailed behavior and data model
 - `CONTRIBUTING.md` for local dev notes and contribution rules
