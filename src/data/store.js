@@ -287,30 +287,122 @@ function migrateRecordToStampedFields(record, mutableKeys, defaultDeviceId) {
   return migrated;
 }
 
-function migrateStateToCurrentSchema(state, schemaVersion, deviceId) {
-  if (!state || typeof state !== 'object') {
-    return { state: createSeedData(), schemaVersion: STATE_SCHEMA_VERSION };
+/**
+ * Ensures a migrated state has all required top-level collections and key fields.
+ *
+ * This runs after version-specific migrations so unknown or partial payloads
+ * still produce a usable in-memory model.
+ */
+function applyStateGuards(state) {
+  const guarded = state && typeof state === 'object' ? state : {};
+
+  for (const collection of ['inbox', 'today', 'tasks', 'meetings', 'people', 'projects', 'followUps', 'reminders', 'notes', 'dailyLogs']) {
+    if (!Array.isArray(guarded[collection])) {
+      guarded[collection] = [];
+    }
   }
 
-  if (schemaVersion >= STATE_SCHEMA_VERSION) {
-    return { state, schemaVersion: schemaVersion || STATE_SCHEMA_VERSION };
+  if (!guarded.suggestions || typeof guarded.suggestions !== 'object') {
+    guarded.suggestions = { must: [], should: [], could: [] };
   }
 
-  const migrated = structuredClone(state);
-  for (const [collection, mutableKeys] of Object.entries(MUTABLE_FIELDS_BY_COLLECTION)) {
-    if (collection === 'suggestions') {
-      for (const bucket of ['must', 'should', 'could']) {
-        if (!Array.isArray(migrated.suggestions?.[bucket])) continue;
-        migrated.suggestions[bucket] = migrated.suggestions[bucket].map((entry) => migrateRecordToStampedFields(entry, mutableKeys, deviceId));
+  for (const bucket of ['must', 'should', 'could']) {
+    if (!Array.isArray(guarded.suggestions[bucket])) {
+      guarded.suggestions[bucket] = [];
+    }
+  }
+
+  guarded.inbox = guarded.inbox.map((entry) => ({ archived: false, snoozed: false, ...entry }));
+  guarded.today = guarded.today.map((entry) => normalizeTodayExecution(entry || {}));
+
+  if (typeof guarded.lastActiveDate !== 'string') {
+    guarded.lastActiveDate = toLocalIsoDate(new Date());
+  }
+
+  return guarded;
+}
+
+const STATE_MIGRATIONS = [
+  {
+    fromVersion: 1,
+    toVersion: 2,
+    apply: (state, { deviceId }) => {
+      const migrated = structuredClone(state);
+      for (const [collection, mutableKeys] of Object.entries(MUTABLE_FIELDS_BY_COLLECTION)) {
+        if (collection === 'suggestions') {
+          for (const bucket of ['must', 'should', 'could']) {
+            if (!Array.isArray(migrated.suggestions?.[bucket])) continue;
+            migrated.suggestions[bucket] = migrated.suggestions[bucket].map((entry) => migrateRecordToStampedFields(entry, mutableKeys, deviceId));
+          }
+          continue;
+        }
+
+        if (!Array.isArray(migrated[collection])) continue;
+        migrated[collection] = migrated[collection].map((entry) => migrateRecordToStampedFields(entry, mutableKeys, deviceId));
       }
-      continue;
+      return migrated;
+    }
+  }
+];
+
+/**
+ * Migrates persisted snapshots to the current state schema using ordered steps.
+ */
+function migrateState(snapshot) {
+  const warnings = [];
+  const fallbackState = applyStateGuards(createSeedData());
+
+  try {
+    const record = snapshot && typeof snapshot === 'object' ? snapshot : {};
+    const payload = record.payload;
+    const payloadIsVersionedEnvelope = payload && typeof payload === 'object' && payload.collections && typeof payload.collections === 'object';
+
+    let workingState = payloadIsVersionedEnvelope ? structuredClone(payload.collections) : structuredClone(payload || {});
+    let schemaVersion = payloadIsVersionedEnvelope
+      ? Number(payload.schemaVersion || record.schemaVersion || 1)
+      : Number(record.schemaVersion || 1);
+
+    if (!workingState || typeof workingState !== 'object' || Number.isNaN(schemaVersion)) {
+      warnings.push('Loaded state was malformed. Falling back to seeded state.');
+      return { state: fallbackState, schemaVersion: STATE_SCHEMA_VERSION, warnings };
     }
 
-    if (!Array.isArray(migrated[collection])) continue;
-    migrated[collection] = migrated[collection].map((entry) => migrateRecordToStampedFields(entry, mutableKeys, deviceId));
-  }
+    if (schemaVersion > STATE_SCHEMA_VERSION) {
+      warnings.push(`Loaded schemaVersion ${schemaVersion} is newer than supported ${STATE_SCHEMA_VERSION}. Falling back to seeded state.`);
+      return { state: fallbackState, schemaVersion: STATE_SCHEMA_VERSION, warnings };
+    }
 
-  return { state: migrated, schemaVersion: STATE_SCHEMA_VERSION };
+    while (schemaVersion < STATE_SCHEMA_VERSION) {
+      const step = STATE_MIGRATIONS.find((entry) => entry.fromVersion === schemaVersion);
+      if (!step) {
+        warnings.push(`No migration path found from schemaVersion ${schemaVersion}. Falling back to seeded state.`);
+        return { state: fallbackState, schemaVersion: STATE_SCHEMA_VERSION, warnings };
+      }
+
+      workingState = step.apply(workingState, { deviceId: record.deviceId || getDeviceId() });
+      schemaVersion = step.toVersion;
+    }
+
+    return {
+      state: applyStateGuards(workingState),
+      schemaVersion,
+      warnings
+    };
+  } catch (error) {
+    warnings.push(`State migration failed with error: ${error instanceof Error ? error.message : 'unknown error'}. Falling back to seeded state.`);
+    return { state: fallbackState, schemaVersion: STATE_SCHEMA_VERSION, warnings };
+  }
+}
+
+function migrateStateToCurrentSchema(state, schemaVersion, deviceId) {
+  return migrateState({
+    schemaVersion,
+    deviceId,
+    payload: {
+      schemaVersion,
+      collections: state
+    }
+  });
 }
 
 /**
@@ -426,35 +518,48 @@ export class AppStore {
     this.state = createSeedData();
     this.listeners = new Set();
     this.startupRolloverNotice = null;
+    this.migrationWarnings = [];
   }
 
   async init() {
     try {
       const now = new Date();
       const currentLocalDate = getCurrentLocalIsoDate(now);
-      let loadedSchemaVersion = 1;
       const ready = await this.db.init();
+      let migrationResult = migrateState({
+        schemaVersion: STATE_SCHEMA_VERSION,
+        deviceId: getDeviceId(),
+        payload: {
+          schemaVersion: STATE_SCHEMA_VERSION,
+          collections: this.state
+        }
+      });
+
       if (ready) {
         const snapshot = await this.db.get('wireframe-state');
         if (snapshot?.payload) {
-          loadedSchemaVersion = snapshot.schemaVersion || 1;
-          const migrated = migrateStateToCurrentSchema(snapshot.payload, loadedSchemaVersion, snapshot.deviceId || getDeviceId());
-          this.state = migrated.state;
-          loadedSchemaVersion = migrated.schemaVersion;
+          migrationResult = migrateState(snapshot);
         }
       }
 
-      const seedMigration = migrateStateToCurrentSchema(this.state, loadedSchemaVersion, getDeviceId());
-      this.state = seedMigration.state;
+      // Only assign in-memory state once migration and guard-fill pass.
+      this.state = migrationResult.state;
+      this.migrationWarnings = migrationResult.warnings;
+      if (this.migrationWarnings.length) {
+        console.warn('State migration completed with warnings.', this.migrationWarnings);
+      }
+
       this.ensureCollections();
 
       const rolloverResult = this.applyStartupDayRollover(currentLocalDate, now);
       // Persist date/rollover outcomes immediately so refreshes are deterministic.
-      if (rolloverResult.didChangeDate || !rolloverResult.previousDate) {
+      if (rolloverResult.didChangeDate || !rolloverResult.previousDate || this.migrationWarnings.length) {
         await this.persist();
       }
-    } catch {
-      // Ignore initialization failures and stay on in-memory data.
+    } catch (error) {
+      this.migrationWarnings = ['Initialization failed. Using in-memory seeded state.'];
+      console.warn('State initialization failed; continuing with in-memory data.', error);
+      this.state = applyStateGuards(createSeedData());
     }
   }
 
@@ -504,22 +609,12 @@ export class AppStore {
     return this.startupRolloverNotice ? structuredClone(this.startupRolloverNotice) : null;
   }
 
+  getMigrationWarnings() {
+    return [...this.migrationWarnings];
+  }
+
   ensureCollections() {
-    for (const collection of ['inbox', 'today', 'tasks', 'meetings', 'people', 'projects', 'followUps', 'reminders', 'notes', 'dailyLogs']) {
-      if (!Array.isArray(this.state[collection])) {
-        this.state[collection] = [];
-      }
-    }
-
-    if (!this.state.suggestions || typeof this.state.suggestions !== 'object') {
-      this.state.suggestions = { must: [], should: [], could: [] };
-    }
-
-    for (const bucket of ['must', 'should', 'could']) {
-      if (!Array.isArray(this.state.suggestions[bucket])) {
-        this.state.suggestions[bucket] = [];
-      }
-    }
+    this.state = applyStateGuards(this.state);
   }
 
   subscribe(listener) {
@@ -563,6 +658,9 @@ export class AppStore {
     }
 
     const migratedImport = migrateStateToCurrentSchema(collections, schemaVersion, deviceId || getDeviceId());
+    if (migratedImport.warnings.length) {
+      console.warn('Import migration completed with warnings.', migratedImport.warnings);
+    }
 
     this.ensureCollections();
 
@@ -618,7 +716,10 @@ export class AppStore {
         id: 'wireframe-state',
         schemaVersion: STATE_SCHEMA_VERSION,
         deviceId: getDeviceId(),
-        payload: this.state,
+        payload: {
+          schemaVersion: STATE_SCHEMA_VERSION,
+          collections: this.state
+        },
         updatedAt: Date.now()
       });
     } catch {

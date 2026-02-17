@@ -105,6 +105,13 @@ Follow-ups surface in:
 3. Confirm the destructive-action warning.
 4. Review the in-app success/error status message shown in the top bar.
 
+### State schema migration expectations
+- Persisted IndexedDB records now store a versioned payload envelope: `payload.schemaVersion` + `payload.collections`.
+- App startup runs ordered migrations from the stored schema version to the current schema before assigning in-memory state.
+- Migrations are designed to be **non-fatal**: when a migration step fails or the payload is malformed/newer-than-supported, the app logs warnings and falls back to seeded default state so the UI remains usable.
+- After migration, guard-fills enforce required collections (`inbox`, `today`, `tasks`, etc.), suggestion buckets (`must/should/could`), and key fields (`lastActiveDate`, `today.execution/status`, inbox archive/snooze defaults).
+- Import flow uses the same migration path as startup, so manual backups from older schema versions remain forward-compatible.
+
 ### Future: Google Drive sync
 Planned design:
 - A single JSON blob in Drive (or chunked files later).
