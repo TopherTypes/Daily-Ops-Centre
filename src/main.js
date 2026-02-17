@@ -413,6 +413,11 @@ function bindGlobalEvents() {
     store.emit();
   }
 
+  // Defensive target check keeps pointer/click handlers safe for non-Element event targets.
+  function isEventInsideQuickCapture(target) {
+    return target instanceof Element && Boolean(target.closest('[data-quick-capture]'));
+  }
+
   document.addEventListener('submit', async (event) => {
     const quickCapture = event.target.closest('[data-quick-capture]');
     const captureForm = event.target.closest('[data-capture-form]');
@@ -527,9 +532,17 @@ function bindGlobalEvents() {
   // including non-focusable whitespace that does not trigger a focus transition.
   document.addEventListener('pointerdown', (event) => {
     if (!uiState.captureKeyVisible) return;
-    if (event.target.closest('[data-quick-capture]')) return;
+    if (isEventInsideQuickCapture(event.target)) return;
     hideCaptureKeyIfVisible();
-  });
+  }, true);
+
+  // Some environments dispatch click without pointer events in specific interaction paths;
+  // capture-phase click guarantees outside-click dismissal still executes.
+  document.addEventListener('click', (event) => {
+    if (!uiState.captureKeyVisible) return;
+    if (isEventInsideQuickCapture(event.target)) return;
+    hideCaptureKeyIfVisible();
+  }, true);
 
   document.addEventListener('click', async (event) => {
     const tabButton = event.target.closest('[data-tab]');
