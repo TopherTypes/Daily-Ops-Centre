@@ -1,4 +1,20 @@
 import { DbClient } from './db.js';
+import { getDeviceId } from './device.js';
+
+const SNAPSHOT_SCHEMA_VERSION = 1;
+const IMPORTABLE_COLLECTIONS = [
+  'inbox',
+  'suggestions',
+  'today',
+  'tasks',
+  'people',
+  'projects',
+  'reminders',
+  'notes',
+  'meetings',
+  'followUps',
+  'dailyLogs'
+];
 
 /**
  * Creates baseline mock entities used across modes and Library views.
@@ -107,6 +123,52 @@ function getLastTodayNote(item) {
 }
 
 /**
+ * Merges array records by stable `id` while preserving local-only records.
+ *
+ * Policy for this MVP:
+ * - incoming IDs replace matching local IDs,
+ * - local IDs not present in import are kept,
+ * - imported items append in their incoming order.
+ */
+function mergeCollectionById(localItems, importedItems) {
+  const local = Array.isArray(localItems) ? localItems : [];
+  const incoming = Array.isArray(importedItems) ? importedItems : [];
+  const incomingById = new Map();
+
+  for (const entry of incoming) {
+    if (entry && typeof entry === 'object' && typeof entry.id === 'string' && entry.id.trim()) {
+      incomingById.set(entry.id, entry);
+    }
+  }
+
+  const merged = [];
+
+  for (const localEntry of local) {
+    if (!localEntry || typeof localEntry !== 'object' || typeof localEntry.id !== 'string') {
+      merged.push(localEntry);
+      continue;
+    }
+
+    if (incomingById.has(localEntry.id)) {
+      merged.push(incomingById.get(localEntry.id));
+      incomingById.delete(localEntry.id);
+    } else {
+      merged.push(localEntry);
+    }
+  }
+
+  for (const importedEntry of incoming) {
+    if (!importedEntry || typeof importedEntry !== 'object' || typeof importedEntry.id !== 'string') continue;
+    if (incomingById.has(importedEntry.id)) {
+      merged.push(importedEntry);
+      incomingById.delete(importedEntry.id);
+    }
+  }
+
+  return merged;
+}
+
+/**
  * Deterministic token parser for the documented capture syntax.
  *
  * Intentionally avoids heuristics in this phase so contributors can safely
@@ -158,9 +220,19 @@ export class AppStore {
   }
 
   ensureCollections() {
-    for (const collection of ['tasks', 'meetings', 'people', 'projects', 'followUps', 'reminders', 'notes', 'dailyLogs']) {
+    for (const collection of ['inbox', 'today', 'tasks', 'meetings', 'people', 'projects', 'followUps', 'reminders', 'notes', 'dailyLogs']) {
       if (!Array.isArray(this.state[collection])) {
         this.state[collection] = [];
+      }
+    }
+
+    if (!this.state.suggestions || typeof this.state.suggestions !== 'object') {
+      this.state.suggestions = { must: [], should: [], could: [] };
+    }
+
+    for (const bucket of ['must', 'should', 'could']) {
+      if (!Array.isArray(this.state.suggestions[bucket])) {
+        this.state.suggestions[bucket] = [];
       }
     }
   }
@@ -172,6 +244,83 @@ export class AppStore {
 
   getState() {
     return structuredClone(this.state);
+  }
+
+  /**
+   * Exports a versioned snapshot payload for manual backup and transfer.
+   */
+  exportSnapshot() {
+    this.ensureCollections();
+
+    return {
+      schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+      exportedAt: new Date().toISOString(),
+      deviceId: getDeviceId(),
+      collections: structuredClone(this.state)
+    };
+  }
+
+  /**
+   * Validates and merges an imported snapshot into current state.
+   */
+  async importSnapshot(payload) {
+    if (!payload || typeof payload !== 'object') {
+      throw new Error('Import failed: snapshot payload must be an object.');
+    }
+
+    const { schemaVersion, collections } = payload;
+    if (schemaVersion !== SNAPSHOT_SCHEMA_VERSION) {
+      throw new Error(`Import failed: unsupported schemaVersion ${schemaVersion}.`);
+    }
+
+    if (!collections || typeof collections !== 'object') {
+      throw new Error('Import failed: missing collections object.');
+    }
+
+    this.ensureCollections();
+
+    const mergeSummary = {};
+
+    for (const collection of IMPORTABLE_COLLECTIONS) {
+      if (!(collection in collections)) continue;
+
+      if (collection === 'suggestions') {
+        const localSuggestions = this.state.suggestions || {};
+        const importedSuggestions = collections.suggestions;
+        if (!importedSuggestions || typeof importedSuggestions !== 'object') {
+          throw new Error('Import failed: suggestions must be an object containing must/should/could arrays.');
+        }
+
+        for (const bucket of ['must', 'should', 'could']) {
+          if (!Array.isArray(importedSuggestions[bucket])) {
+            throw new Error(`Import failed: suggestions.${bucket} must be an array.`);
+          }
+        }
+
+        const mergedSuggestions = {
+          must: mergeCollectionById(localSuggestions.must, importedSuggestions.must),
+          should: mergeCollectionById(localSuggestions.should, importedSuggestions.should),
+          could: mergeCollectionById(localSuggestions.could, importedSuggestions.could)
+        };
+        this.state.suggestions = mergedSuggestions;
+        mergeSummary.suggestions = mergedSuggestions.must.length + mergedSuggestions.should.length + mergedSuggestions.could.length;
+        continue;
+      }
+
+      const localCollection = this.state[collection];
+      const importedCollection = collections[collection];
+      if (!Array.isArray(importedCollection)) {
+        throw new Error(`Import failed: collection "${collection}" must be an array.`);
+      }
+
+      const merged = mergeCollectionById(localCollection, importedCollection);
+      this.state[collection] = merged;
+      mergeSummary[collection] = merged.length;
+    }
+
+    await this.persist();
+    this.emit();
+    return { ok: true, merged: mergeSummary };
   }
 
   async persist() {

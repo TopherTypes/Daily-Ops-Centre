@@ -14,11 +14,56 @@ const uiState = {
   route: '/capture',
   captureTab: 'unprocessed',
   processingInboxId: null,
-  executeNoteItemId: null
+  executeNoteItemId: null,
+  backupNotice: null
 };
 
 function isLibraryRoute(route) {
   return route.startsWith('/library');
+}
+
+function setBackupNotice(type, message) {
+  // Global import/export notifications are displayed in the top bar so they are visible in every mode.
+  uiState.backupNotice = { type, message };
+  store.emit();
+}
+
+function triggerSnapshotDownload(snapshot) {
+  // Browser-native download flow: Blob + object URL + temporary anchor element.
+  const exportedAtCompact = snapshot.exportedAt.replace(/[:.]/g, '-');
+  const fileName = `daily-ops-snapshot-${exportedAtCompact}.json`;
+  const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+}
+
+async function handleSnapshotImport(file) {
+  if (!file) return;
+
+  // Destructive-action guardrail: importing can replace existing records with matching IDs.
+  const confirmed = window.confirm(
+    'Importing a snapshot merges records by ID and may replace matching local entries. Continue?'
+  );
+  if (!confirmed) {
+    setBackupNotice('warn', 'Import cancelled by user.');
+    return;
+  }
+
+  try {
+    const raw = await file.text();
+    const payload = JSON.parse(raw);
+    const result = await store.importSnapshot(payload);
+    const mergedCount = Object.values(result.merged || {}).reduce((sum, count) => sum + Number(count || 0), 0);
+    setBackupNotice('ok', `Import complete. ${mergedCount} total merged records across known collections.`);
+  } catch (error) {
+    setBackupNotice('error', error?.message || 'Import failed due to an unknown error.');
+  }
 }
 
 function renderShell(state) {
@@ -43,7 +88,13 @@ function renderShell(state) {
           ${['capture', 'plan', 'execute', 'close'].map((item) => `<a class="mode-link ${mode === item ? 'active' : ''}" href="#/${item}">${item[0].toUpperCase() + item.slice(1)}</a>`).join('')}
           <a class="mode-link library" href="#/library/tasks">Library</a>
           <span class="muted">Device: ${getDeviceId()}</span>
+          <div class="backup-controls">
+            <button class="button" type="button" data-backup-action="export">Export</button>
+            <button class="button" type="button" data-backup-action="import">Import</button>
+            <input class="hidden-file-input" type="file" accept="application/json,.json" data-import-file-input />
+          </div>
         </nav>
+        <p class="status-text ${uiState.backupNotice?.type || ''}" role="status" aria-live="polite">${uiState.backupNotice?.message || 'Backup tools are always available in this top bar.'}</p>
         ${hideQuickCapture ? '' : `
           <form data-quick-capture class="quick-row" aria-label="Global quick capture">
             <label for="global-capture" class="muted">Quick capture</label>
@@ -117,11 +168,36 @@ function bindGlobalEvents() {
     input.value = '';
   });
 
+  document.addEventListener('change', async (event) => {
+    const importInput = event.target.closest('[data-import-file-input]');
+    if (!importInput) return;
+
+    const [file] = importInput.files || [];
+    await handleSnapshotImport(file);
+
+    // Reset input so selecting the same file again still triggers change events.
+    importInput.value = '';
+  });
+
   document.addEventListener('click', async (event) => {
     const tabButton = event.target.closest('[data-tab]');
     if (tabButton) {
       uiState.captureTab = tabButton.dataset.tab;
       store.emit();
+      return;
+    }
+
+    const backupButton = event.target.closest('[data-backup-action]');
+    if (backupButton) {
+      const action = backupButton.dataset.backupAction;
+      if (action === 'export') {
+        const snapshot = store.exportSnapshot();
+        triggerSnapshotDownload(snapshot);
+        setBackupNotice('ok', `Export complete: ${snapshot.exportedAt}`);
+      } else if (action === 'import') {
+        const input = document.querySelector('[data-import-file-input]');
+        input?.click();
+      }
       return;
     }
 
