@@ -330,6 +330,36 @@ p {
   margin-left: 0;
 }
 
+
+/* Reusable Library detail-editor layout keeps labels aligned across entity types. */
+.library-edit-form {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.library-edit-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.library-edit-row .muted {
+  font-size: 0.85rem;
+}
+
+.library-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 760px) {
+  .library-edit-row {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+}
+
 @media (max-width: 760px) {
   .library-grid {
     grid-template-columns: 1fr;
