@@ -1,7 +1,23 @@
 import { DbClient } from './db.js';
 import { getDeviceId } from './device.js';
 
-const SNAPSHOT_SCHEMA_VERSION = 1;
+const SNAPSHOT_SCHEMA_VERSION = 2;
+const STATE_SCHEMA_VERSION = 2;
+const STAMPED_FIELD_CONTAINER_KEY = '_fields';
+
+const MUTABLE_FIELDS_BY_COLLECTION = {
+  inbox: ['raw', 'type', 'archived', 'processedType', 'processedAt'],
+  today: ['title', 'status', 'bucket', 'execution', 'due', 'scheduled', 'priority', 'context'],
+  tasks: ['title', 'status', 'due', 'scheduled', 'priority', 'context'],
+  meetings: ['title', 'time', 'meetingType', 'agenda', 'notes', 'due', 'scheduled', 'priority', 'context'],
+  reminders: ['title', 'status', 'due', 'scheduled', 'priority', 'context'],
+  notes: ['title', 'body', 'context', 'priority'],
+  followUps: ['title', 'details', 'recipients', 'status', 'context', 'priority'],
+  people: ['name', 'email', 'phone'],
+  projects: ['name', 'status'],
+  suggestions: ['title', 'meta', 'type'],
+  dailyLogs: []
+};
 const IMPORTABLE_COLLECTIONS = [
   'inbox',
   'suggestions',
@@ -91,6 +107,47 @@ function titleFromRaw(rawText) {
   return rawText.replace(/\s+/g, ' ').trim();
 }
 
+function isStampedField(value) {
+  return Boolean(value && typeof value === 'object' && 'updatedAt' in value && 'updatedByDeviceId' in value && 'value' in value);
+}
+
+/**
+ * Creates a conflict-aware field stamp for field-level merges.
+ */
+function stampField(value, deviceId, updatedAt = new Date().toISOString()) {
+  return { value, updatedAt, updatedByDeviceId: deviceId };
+}
+
+/**
+ * Writes a stamped field and mirrors the raw value for backward compatible reads.
+ */
+function updateStampedField(record, key, value, deviceId, updatedAt = new Date().toISOString()) {
+  if (!record || typeof record !== 'object') return record;
+
+  if (!record[STAMPED_FIELD_CONTAINER_KEY] || typeof record[STAMPED_FIELD_CONTAINER_KEY] !== 'object') {
+    record[STAMPED_FIELD_CONTAINER_KEY] = {};
+  }
+
+  const stamped = stampField(value, deviceId, updatedAt);
+  record[STAMPED_FIELD_CONTAINER_KEY][key] = stamped;
+  record[key] = value;
+  return record;
+}
+
+function getStampedValue(record, key, fallback = undefined) {
+  const stamped = record?.[STAMPED_FIELD_CONTAINER_KEY]?.[key];
+  if (isStampedField(stamped)) return stamped.value;
+  return record?.[key] ?? fallback;
+}
+
+function stampEntityMutableFields(record, keys, deviceId, updatedAt = new Date().toISOString()) {
+  for (const key of keys) {
+    if (!(key in record)) continue;
+    updateStampedField(record, key, record[key], deviceId, updatedAt);
+  }
+  return record;
+}
+
 
 function createTodayExecutionState(status = 'not started') {
   return {
@@ -101,11 +158,14 @@ function createTodayExecutionState(status = 'not started') {
 }
 
 function normalizeTodayExecution(item) {
-  const execution = item.execution || {};
+  const execution = getStampedValue(item, 'execution', item.execution || {});
+  const status = getStampedValue(item, 'status', execution.status || item.status || 'not started');
+
   return {
     ...item,
+    status,
     execution: {
-      status: execution.status || item.status || 'not started',
+      status,
       updatedAt: execution.updatedAt || item.updatedAt || new Date().toISOString(),
       notes: Array.isArray(execution.notes) ? execution.notes : []
     }
@@ -130,7 +190,55 @@ function getLastTodayNote(item) {
  * - local IDs not present in import are kept,
  * - imported items append in their incoming order.
  */
-function mergeCollectionById(localItems, importedItems) {
+function getLatestStamp(localStamp, incomingStamp) {
+  if (isStampedField(localStamp) && isStampedField(incomingStamp)) {
+    return Date.parse(incomingStamp.updatedAt) >= Date.parse(localStamp.updatedAt) ? incomingStamp : localStamp;
+  }
+
+  if (isStampedField(incomingStamp)) return incomingStamp;
+  if (isStampedField(localStamp)) return localStamp;
+  return null;
+}
+
+/**
+ * Merges entity fields and resolves conflicts with per-field `updatedAt` stamps.
+ */
+function mergeEntityFields(localEntity, incomingEntity, mutableKeys = []) {
+  if (!localEntity || typeof localEntity !== 'object') return incomingEntity;
+  if (!incomingEntity || typeof incomingEntity !== 'object') return localEntity;
+
+  const merged = {
+    ...localEntity,
+    ...incomingEntity,
+    id: localEntity.id || incomingEntity.id,
+    [STAMPED_FIELD_CONTAINER_KEY]: {
+      ...(localEntity[STAMPED_FIELD_CONTAINER_KEY] || {}),
+      ...(incomingEntity[STAMPED_FIELD_CONTAINER_KEY] || {})
+    }
+  };
+
+  for (const key of mutableKeys) {
+    const localStamp = localEntity?.[STAMPED_FIELD_CONTAINER_KEY]?.[key];
+    const incomingStamp = incomingEntity?.[STAMPED_FIELD_CONTAINER_KEY]?.[key];
+    const latestStamp = getLatestStamp(localStamp, incomingStamp);
+
+    if (latestStamp) {
+      merged[STAMPED_FIELD_CONTAINER_KEY][key] = latestStamp;
+      merged[key] = latestStamp.value;
+      continue;
+    }
+
+    if (key in incomingEntity) {
+      merged[key] = incomingEntity[key];
+    } else if (key in localEntity) {
+      merged[key] = localEntity[key];
+    }
+  }
+
+  return merged;
+}
+
+function mergeCollectionById(localItems, importedItems, mutableKeys = []) {
   const local = Array.isArray(localItems) ? localItems : [];
   const incoming = Array.isArray(importedItems) ? importedItems : [];
   const incomingById = new Map();
@@ -150,7 +258,7 @@ function mergeCollectionById(localItems, importedItems) {
     }
 
     if (incomingById.has(localEntry.id)) {
-      merged.push(incomingById.get(localEntry.id));
+      merged.push(mergeEntityFields(localEntry, incomingById.get(localEntry.id), mutableKeys));
       incomingById.delete(localEntry.id);
     } else {
       merged.push(localEntry);
@@ -166,6 +274,40 @@ function mergeCollectionById(localItems, importedItems) {
   }
 
   return merged;
+}
+
+function migrateRecordToStampedFields(record, mutableKeys, defaultDeviceId) {
+  if (!record || typeof record !== 'object') return record;
+  const migrated = { ...record };
+  const updatedAt = migrated.updatedAt || new Date().toISOString();
+  stampEntityMutableFields(migrated, mutableKeys, defaultDeviceId, updatedAt);
+  return migrated;
+}
+
+function migrateStateToCurrentSchema(state, schemaVersion, deviceId) {
+  if (!state || typeof state !== 'object') {
+    return { state: createSeedData(), schemaVersion: STATE_SCHEMA_VERSION };
+  }
+
+  if (schemaVersion >= STATE_SCHEMA_VERSION) {
+    return { state, schemaVersion: schemaVersion || STATE_SCHEMA_VERSION };
+  }
+
+  const migrated = structuredClone(state);
+  for (const [collection, mutableKeys] of Object.entries(MUTABLE_FIELDS_BY_COLLECTION)) {
+    if (collection === 'suggestions') {
+      for (const bucket of ['must', 'should', 'could']) {
+        if (!Array.isArray(migrated.suggestions?.[bucket])) continue;
+        migrated.suggestions[bucket] = migrated.suggestions[bucket].map((entry) => migrateRecordToStampedFields(entry, mutableKeys, deviceId));
+      }
+      continue;
+    }
+
+    if (!Array.isArray(migrated[collection])) continue;
+    migrated[collection] = migrated[collection].map((entry) => migrateRecordToStampedFields(entry, mutableKeys, deviceId));
+  }
+
+  return { state: migrated, schemaVersion: STATE_SCHEMA_VERSION };
 }
 
 /**
@@ -206,13 +348,20 @@ export class AppStore {
 
   async init() {
     try {
+      let loadedSchemaVersion = 1;
       const ready = await this.db.init();
       if (ready) {
         const snapshot = await this.db.get('wireframe-state');
         if (snapshot?.payload) {
-          this.state = snapshot.payload;
+          loadedSchemaVersion = snapshot.schemaVersion || 1;
+          const migrated = migrateStateToCurrentSchema(snapshot.payload, loadedSchemaVersion, snapshot.deviceId || getDeviceId());
+          this.state = migrated.state;
+          loadedSchemaVersion = migrated.schemaVersion;
         }
       }
+
+      const seedMigration = migrateStateToCurrentSchema(this.state, loadedSchemaVersion, getDeviceId());
+      this.state = seedMigration.state;
       this.ensureCollections();
     } catch {
       // Ignore initialization failures and stay on in-memory data.
@@ -268,8 +417,8 @@ export class AppStore {
       throw new Error('Import failed: snapshot payload must be an object.');
     }
 
-    const { schemaVersion, collections } = payload;
-    if (schemaVersion !== SNAPSHOT_SCHEMA_VERSION) {
+    const { schemaVersion, collections, deviceId } = payload;
+    if (typeof schemaVersion !== 'number' || schemaVersion < 1 || schemaVersion > SNAPSHOT_SCHEMA_VERSION) {
       throw new Error(`Import failed: unsupported schemaVersion ${schemaVersion}.`);
     }
 
@@ -277,16 +426,18 @@ export class AppStore {
       throw new Error('Import failed: missing collections object.');
     }
 
+    const migratedImport = migrateStateToCurrentSchema(collections, schemaVersion, deviceId || getDeviceId());
+
     this.ensureCollections();
 
     const mergeSummary = {};
 
     for (const collection of IMPORTABLE_COLLECTIONS) {
-      if (!(collection in collections)) continue;
+      if (!(collection in migratedImport.state)) continue;
 
       if (collection === 'suggestions') {
         const localSuggestions = this.state.suggestions || {};
-        const importedSuggestions = collections.suggestions;
+        const importedSuggestions = migratedImport.state.suggestions;
         if (!importedSuggestions || typeof importedSuggestions !== 'object') {
           throw new Error('Import failed: suggestions must be an object containing must/should/could arrays.');
         }
@@ -297,10 +448,11 @@ export class AppStore {
           }
         }
 
+        const mutableFields = MUTABLE_FIELDS_BY_COLLECTION.suggestions;
         const mergedSuggestions = {
-          must: mergeCollectionById(localSuggestions.must, importedSuggestions.must),
-          should: mergeCollectionById(localSuggestions.should, importedSuggestions.should),
-          could: mergeCollectionById(localSuggestions.could, importedSuggestions.could)
+          must: mergeCollectionById(localSuggestions.must, importedSuggestions.must, mutableFields),
+          should: mergeCollectionById(localSuggestions.should, importedSuggestions.should, mutableFields),
+          could: mergeCollectionById(localSuggestions.could, importedSuggestions.could, mutableFields)
         };
         this.state.suggestions = mergedSuggestions;
         mergeSummary.suggestions = mergedSuggestions.must.length + mergedSuggestions.should.length + mergedSuggestions.could.length;
@@ -308,12 +460,13 @@ export class AppStore {
       }
 
       const localCollection = this.state[collection];
-      const importedCollection = collections[collection];
+      const importedCollection = migratedImport.state[collection];
       if (!Array.isArray(importedCollection)) {
         throw new Error(`Import failed: collection "${collection}" must be an array.`);
       }
 
-      const merged = mergeCollectionById(localCollection, importedCollection);
+      const mutableFields = MUTABLE_FIELDS_BY_COLLECTION[collection] || [];
+      const merged = mergeCollectionById(localCollection, importedCollection, mutableFields);
       this.state[collection] = merged;
       mergeSummary[collection] = merged.length;
     }
@@ -325,19 +478,29 @@ export class AppStore {
 
   async persist() {
     try {
-      await this.db.put({ id: 'wireframe-state', payload: this.state, updatedAt: Date.now() });
+      await this.db.put({
+        id: 'wireframe-state',
+        schemaVersion: STATE_SCHEMA_VERSION,
+        deviceId: getDeviceId(),
+        payload: this.state,
+        updatedAt: Date.now()
+      });
     } catch {
       // Wireframe mode tolerates persistence failures.
     }
   }
 
   async addInboxItem(raw) {
-    this.state.inbox.unshift({
+    const now = new Date().toISOString();
+    const deviceId = getDeviceId();
+    const item = {
       id: `in_${Date.now()}`,
       raw,
       type: 'unknown',
       archived: false
-    });
+    };
+    stampEntityMutableFields(item, MUTABLE_FIELDS_BY_COLLECTION.inbox, deviceId, now);
+    this.state.inbox.unshift(item);
     await this.persist();
     this.emit();
   }
@@ -345,7 +508,9 @@ export class AppStore {
   async toggleArchiveInbox(id) {
     const item = this.state.inbox.find((entry) => entry.id === id);
     if (!item) return;
-    item.archived = !item.archived;
+
+    const nextArchived = !getStampedValue(item, 'archived', item.archived);
+    updateStampedField(item, 'archived', nextArchived, getDeviceId());
     await this.persist();
     this.emit();
   }
@@ -360,6 +525,7 @@ export class AppStore {
       name,
       source: provenance
     };
+    stampEntityMutableFields(created, MUTABLE_FIELDS_BY_COLLECTION.people, getDeviceId());
     this.state.people.push(created);
     return created;
   }
@@ -374,6 +540,7 @@ export class AppStore {
       name,
       source: provenance
     };
+    stampEntityMutableFields(created, MUTABLE_FIELDS_BY_COLLECTION.projects, getDeviceId());
     this.state.projects.push(created);
     return created;
   }
@@ -390,12 +557,15 @@ export class AppStore {
     const inboxItem = this.state.inbox.find((entry) => entry.id === inboxId);
     if (!inboxItem) return;
 
-    const parsed = parseCaptureTokens(inboxItem.raw || '');
+    const inboxRaw = getStampedValue(inboxItem, 'raw', inboxItem.raw) || '';
+    const parsed = parseCaptureTokens(inboxRaw);
+    const now = new Date().toISOString();
+    const deviceId = getDeviceId();
     const provenance = {
       type: 'inbox',
       inboxId: inboxItem.id,
-      raw: inboxItem.raw,
-      processedAt: new Date().toISOString()
+      raw: inboxRaw,
+      processedAt: now
     };
 
     // Deterministic field merge: form controls override parsed tokens when present.
@@ -418,7 +588,7 @@ export class AppStore {
 
     const baseRecord = {
       id: `${resolvedType}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      title: fields.title || titleFromRaw(inboxItem.raw),
+      title: fields.title || titleFromRaw(inboxRaw),
       context: fields.context || parsed.context || 'work',
       priority: Number(fields.priority || parsed.priority || 3),
       due: fields.dueDate || parsed.dueDate || '',
@@ -430,39 +600,51 @@ export class AppStore {
 
     // Keep conversion logic explicit per entity type so contributors can safely extend it.
     if (resolvedType === 'task') {
-      this.state.tasks.unshift({ ...baseRecord, status: 'backlog' });
+      const nextTask = { ...baseRecord, status: 'backlog' };
+      stampEntityMutableFields(nextTask, MUTABLE_FIELDS_BY_COLLECTION.tasks, deviceId, now);
+      this.state.tasks.unshift(nextTask);
     } else if (resolvedType === 'meeting') {
-      this.state.meetings.unshift({
+      const nextMeeting = {
         ...baseRecord,
         meetingType: personEntities.length === 1 ? 'one_to_one' : 'group',
         agenda: '',
         notes: ''
-      });
+      };
+      stampEntityMutableFields(nextMeeting, MUTABLE_FIELDS_BY_COLLECTION.meetings, deviceId, now);
+      this.state.meetings.unshift(nextMeeting);
     } else if (resolvedType === 'person') {
-      const personName = fields.title || personEntities[0]?.name || titleFromRaw(inboxItem.raw);
+      const personName = fields.title || personEntities[0]?.name || titleFromRaw(inboxRaw);
       this.findOrCreatePerson(personName, provenance);
     } else if (resolvedType === 'project') {
-      const projectName = fields.title || projectEntity?.name || titleFromRaw(inboxItem.raw);
+      const projectName = fields.title || projectEntity?.name || titleFromRaw(inboxRaw);
       this.findOrCreateProject(projectName, provenance);
     } else if (resolvedType === 'followup') {
-      this.state.followUps.unshift({
+      const nextFollowUp = {
         ...baseRecord,
         source: 'inbox',
         sourceInboxId: inboxItem.id,
         recipients: personEntities.map((person) => ({ personId: person.id, status: 'pending' }))
-      });
+      };
+      stampEntityMutableFields(nextFollowUp, MUTABLE_FIELDS_BY_COLLECTION.followUps, deviceId, now);
+      this.state.followUps.unshift(nextFollowUp);
     } else if (resolvedType === 'reminder') {
-      this.state.reminders.unshift({ ...baseRecord, status: 'pending' });
+      const nextReminder = { ...baseRecord, status: 'pending' };
+      stampEntityMutableFields(nextReminder, MUTABLE_FIELDS_BY_COLLECTION.reminders, deviceId, now);
+      this.state.reminders.unshift(nextReminder);
     } else if (resolvedType === 'note') {
-      this.state.notes.unshift({ ...baseRecord, body: inboxItem.raw });
+      const nextNote = { ...baseRecord, body: inboxRaw };
+      stampEntityMutableFields(nextNote, MUTABLE_FIELDS_BY_COLLECTION.notes, deviceId, now);
+      this.state.notes.unshift(nextNote);
     } else {
-      this.state.tasks.unshift({ ...baseRecord, status: 'backlog' });
+      const fallbackTask = { ...baseRecord, status: 'backlog' };
+      stampEntityMutableFields(fallbackTask, MUTABLE_FIELDS_BY_COLLECTION.tasks, deviceId, now);
+      this.state.tasks.unshift(fallbackTask);
     }
 
     // Archive the source item after successful conversion to preserve inbox provenance.
-    inboxItem.archived = true;
-    inboxItem.processedType = resolvedType;
-    inboxItem.processedAt = provenance.processedAt;
+    updateStampedField(inboxItem, 'archived', true, deviceId, now);
+    updateStampedField(inboxItem, 'processedType', resolvedType, deviceId, now);
+    updateStampedField(inboxItem, 'processedAt', provenance.processedAt, deviceId, now);
 
     await this.persist();
     this.emit();
@@ -477,14 +659,18 @@ export class AppStore {
     const alreadyPresent = this.state.today.some((entry) => (entry.suggestionId || entry.id) === suggestionId);
     if (alreadyPresent) return;
 
-    this.state.today.push({
+    const now = new Date().toISOString();
+    const item = {
       ...suggestion,
       id: `today_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       suggestionId,
       bucket,
       execution: createTodayExecutionState('not started'),
       status: 'not started'
-    });
+    };
+    stampEntityMutableFields(item, MUTABLE_FIELDS_BY_COLLECTION.today, getDeviceId(), now);
+
+    this.state.today.push(item);
     await this.persist();
     this.emit();
   }
@@ -512,7 +698,8 @@ export class AppStore {
     const next = normalizeTodayExecution(this.state.today[index]);
     next.execution.status = status;
     next.execution.updatedAt = new Date().toISOString();
-    next.status = status;
+    updateStampedField(next, 'execution', next.execution, getDeviceId(), next.execution.updatedAt);
+    updateStampedField(next, 'status', status, getDeviceId(), next.execution.updatedAt);
     this.state.today[index] = next;
 
     // Persistence expectation: save status changes immediately so execute progress survives refreshes.
@@ -545,6 +732,7 @@ export class AppStore {
       createdAt: new Date().toISOString()
     });
     next.execution.updatedAt = new Date().toISOString();
+    updateStampedField(next, 'execution', next.execution, getDeviceId(), next.execution.updatedAt);
     this.state.today[index] = next;
 
     // Persistence expectation: notes are workflow evidence and must be saved with each write.

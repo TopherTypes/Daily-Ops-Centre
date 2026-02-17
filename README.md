@@ -4,7 +4,7 @@ A single-page productivity web app designed to offload working memory with a sim
 
 **Capture → Plan → Execute → Close**
 
-Built for GitHub Pages (no backend). Data is stored locally and can be exported/imported. A future milestone adds Google Drive sync with field-by-field merge (each field tracks its own last-updated timestamp).
+Built for GitHub Pages (no backend). Data is stored locally and can be exported/imported. Current wireframe persistence now records field-level stamps for mutable entity fields and resolves conflicts per field during imports. A future milestone adds automated Google Drive sync on top of the same merge primitives.
 
 ## Core principles
 
@@ -88,7 +88,7 @@ Follow-ups surface in:
 - Import is always available from the same top-bar controls.
 - Import requires a destructive-action confirmation before it runs.
 - Import validates snapshot structure before merging.
-- Merge strategy is intentionally minimal for the MVP: records are merged by `id`, matching IDs are replaced by imported versions, and local-only IDs are preserved.
+- Merge strategy is field-aware for mutable business properties: records are matched by `id`, and for stamped fields the newest `updatedAt` wins. Local-only IDs are preserved, and import-only IDs are appended.
 
 #### Manual backup flow
 1. Click **Export** in the top bar.
@@ -104,7 +104,8 @@ Follow-ups surface in:
 ### Future: Google Drive sync
 Planned design:
 - A single JSON blob in Drive (or chunked files later).
-- Merge is performed per field: newest `updatedAt` wins, never deleting unless explicitly newer.
+- Reuse the current stamped-field merge helper during sync so cloud pulls match manual-import behavior.
+- Add tombstone/delete semantics; today, conflict handling covers mutable value updates but not explicit delete propagation.
 
 ## Keyboard shortcuts (initial plan)
 
