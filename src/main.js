@@ -16,7 +16,8 @@ const uiState = {
   processingInboxId: null,
   executeNoteItemId: null,
   backupNotice: null,
-  startupRolloverNotice: null
+  startupRolloverNotice: null,
+  persistenceNotice: null
 };
 
 // Tracks dialog-specific accessibility state across route transitions/rerenders.
@@ -115,6 +116,32 @@ function setBackupNotice(type, message) {
   store.emit();
 }
 
+function syncPersistenceNotice() {
+  const persistence = store.getPersistenceStatus();
+  if (!persistence.degraded) {
+    uiState.persistenceNotice = null;
+    return;
+  }
+
+  // Degraded mode warning is intentionally lightweight so users can keep working while aware of local-save risk.
+  uiState.persistenceNotice = {
+    type: 'warn',
+    message: persistence.lastError || 'Persistence degraded: local saves may fail until storage access recovers.'
+  };
+}
+
+async function performStoreOperation(operationName, operation) {
+  try {
+    await operation();
+    syncPersistenceNotice();
+    return true;
+  } catch (error) {
+    syncPersistenceNotice();
+    setBackupNotice('error', `${operationName} failed: ${error?.message || 'unknown error'}`);
+    return false;
+  }
+}
+
 function triggerSnapshotDownload(snapshot) {
   // Browser-native download flow: Blob + object URL + temporary anchor element.
   const exportedAtCompact = snapshot.exportedAt.replace(/[:.]/g, '-');
@@ -182,6 +209,7 @@ function renderShell(state) {
           </div>
         </nav>
         <p class="status-text ${uiState.backupNotice?.type || ''}" role="status" aria-live="polite">${uiState.backupNotice?.message || 'Backup tools are always available in this top bar.'}</p>
+        ${uiState.persistenceNotice ? `<p class="status-text ${uiState.persistenceNotice.type}" role="status" aria-live="polite" data-persistence-status>${uiState.persistenceNotice.message}</p>` : ''}
         ${uiState.startupRolloverNotice ? `
           <p class="status-text warn" role="status" aria-live="polite" data-startup-rollover-banner>
             Today was reset for a new day (${uiState.startupRolloverNotice.previousDate} → ${uiState.startupRolloverNotice.currentDate}).
@@ -285,8 +313,8 @@ function bindGlobalEvents() {
       const noteInput = closeNoteForm.querySelector('textarea[name="note"]');
       const note = noteInput?.value?.trim() || '';
       if (!itemId || !note) return;
-      await store.addTodayUpdateNote(itemId, note);
-      noteInput.value = '';
+      const ok = await performStoreOperation('Update note save', () => store.addTodayUpdateNote(itemId, note));
+      if (ok) noteInput.value = '';
       return;
     }
 
@@ -295,17 +323,19 @@ function bindGlobalEvents() {
       const noteInput = executeNoteForm.querySelector('textarea[name="note"]');
       const note = noteInput?.value?.trim() || '';
       if (!itemId || !note) return;
-      await store.addTodayUpdateNote(itemId, note);
-      noteInput.value = '';
-      uiState.executeNoteItemId = null;
+      const ok = await performStoreOperation('Update note save', () => store.addTodayUpdateNote(itemId, note));
+      if (ok) {
+        noteInput.value = '';
+        uiState.executeNoteItemId = null;
+      }
       return;
     }
 
     const form = event.target;
     const input = form.querySelector('input[name="globalCapture"], input[name="captureInput"]');
     if (!input?.value.trim()) return;
-    await store.addInboxItem(input.value.trim());
-    input.value = '';
+    const ok = await performStoreOperation('Capture save', () => store.addInboxItem(input.value.trim()));
+    if (ok) input.value = '';
   });
 
   document.addEventListener('change', async (event) => {
@@ -359,12 +389,12 @@ function bindGlobalEvents() {
     const processTargetButton = event.target.closest('[data-process-target]');
     if (processTargetButton) {
       const fields = getProcessingFields(processTargetButton);
-      await store.processInboxItem(
+      const ok = await performStoreOperation('Inbox processing', () => store.processInboxItem(
         processTargetButton.dataset.id,
         processTargetButton.dataset.processTarget,
         fields
-      );
-      uiState.processingInboxId = null;
+      ));
+      if (ok) uiState.processingInboxId = null;
       return;
     }
 
@@ -562,6 +592,7 @@ function bindGlobalEvents() {
 
 async function start() {
   await store.init();
+  syncPersistenceNotice();
   // Startup-only notice explains why Today is empty after automatic date rollover.
   uiState.startupRolloverNotice = store.getStartupRolloverNotice();
   bindGlobalEvents();
@@ -584,6 +615,7 @@ async function start() {
   });
 
   store.subscribe((state) => {
+    syncPersistenceNotice();
     renderShell(state);
     syncLibraryModalAccessibility(uiState.route);
   });
