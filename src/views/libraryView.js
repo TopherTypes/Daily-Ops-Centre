@@ -98,9 +98,18 @@ function renderMeetings(state, selectedId) {
       <section class="col">
         <h3>Meeting detail</h3>
         ${selected ? `
-          <p><strong>${escapeHtml(selected.title)}</strong> <span class="muted">(${escapeHtml(selected.meetingType || 'group')})</span></p>
-          <p class="muted">Agenda: ${escapeHtml(selected.agenda || '')}</p>
-          <div class="row-list">${groups.map((group) => `<article class="row"><strong>${escapeHtml(group.title)}</strong></article>`).join('') || '<p class="muted">No follow-ups.</p>'}</div>
+          <form data-library-meeting-form data-id="${selected.id}" class="inline-fields" aria-label="Meeting detail edit form">
+            <input class="input" name="title" aria-label="Meeting title" value="${escapeHtml(selected.title || '')}" required />
+            <input class="input" name="time" aria-label="Meeting time" placeholder="HH:MM" value="${escapeHtml(selected.time || '')}" />
+            <select class="select" name="meetingType" aria-label="Meeting type">
+              <option value="group" ${selected.meetingType !== 'one_to_one' ? 'selected' : ''}>group</option>
+              <option value="one_to_one" ${selected.meetingType === 'one_to_one' ? 'selected' : ''}>one_to_one</option>
+            </select>
+            <input class="input" name="agenda" aria-label="Meeting agenda" value="${escapeHtml(selected.agenda || '')}" />
+            <input class="input" name="notes" aria-label="Meeting notes" value="${escapeHtml(selected.notes || '')}" />
+            <button class="button" type="submit">Save meeting</button>
+          </form>
+          <div class="row-list" style="margin-top:0.4rem;">${groups.map((group) => `<article class="row"><strong>${escapeHtml(group.title)}</strong></article>`).join('') || '<p class="muted">No follow-ups.</p>'}</div>
           ${renderDetailLifecycleActions('meetings', selected)}
         ` : '<p class="muted">No meeting selected.</p>'}
       </section>
