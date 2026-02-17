@@ -19,10 +19,24 @@ const uiState = {
   startupRolloverNotice: null,
   persistenceNotice: null,
   storageActionNotice: null,
-  toasts: []
+  toasts: [],
+  captureKeyVisible: false
 };
 
 const TOAST_TIMEOUT_MS = 3200;
+
+// Parser key shown on quick-capture focus so users can reliably discover all supported syntax.
+const CAPTURE_TOKEN_KEY = [
+  { label: '@person', detail: 'Attach person token(s). Example: @alex @sam' },
+  { label: '#project', detail: 'Attach project token(s). Example: #roadmap' },
+  { label: '!p1…!p5', detail: 'Set priority from 1 (highest) to 5.' },
+  { label: 'due:YYYY-MM-DD', detail: 'Set due date. Example: due:2026-02-20' },
+  { label: 'do:YYYY-MM-DD', detail: 'Set scheduled date. Example: do:2026-02-18' },
+  { label: 'type:<kind>', detail: 'Force conversion type: task, meeting, note, reminder, followup, project, person.' },
+  { label: 'work: / personal:', detail: 'Set context with either keyword plus colon.' },
+  { label: 'Relative date heuristic', detail: 'Words today/tomorrow infer schedule date when do: token is absent.' },
+  { label: 'Meeting heuristic', detail: 'Words meeting, 1:1, 1-1, one-on-one, sync, standup, check-in, catch-up, call infer type:meeting when type: token is absent.' }
+];
 
 // Tracks dialog-specific accessibility state across route transitions/rerenders.
 const modalState = {
@@ -307,6 +321,17 @@ function renderShell(state) {
             <input id="global-capture" name="globalCapture" class="input" placeholder="Capture from any mode..." required />
             <button class="button btn-primary" type="submit">Save</button>
           </form>
+          ${uiState.captureKeyVisible ? `
+            <section class="panel" data-capture-token-key aria-label="Capture parser key">
+              <div class="view-header" style="margin-bottom:0.35rem;">
+                <strong>Quick-capture parser key</strong>
+                <span class="chip badge-accent">Syntax reference</span>
+              </div>
+              <div class="row-list">
+                ${CAPTURE_TOKEN_KEY.map((entry) => `<article class="row"><div class="row-main"><strong>${entry.label}</strong><div class="muted">${entry.detail}</div></div></article>`).join('')}
+              </div>
+            </section>
+          ` : ''}
         `}
       </header>
       <main id="main-content" tabindex="-1">${content}</main>
@@ -472,6 +497,25 @@ function bindGlobalEvents() {
 
     // Reset input so selecting the same file again still triggers change events.
     importInput.value = '';
+  });
+
+  // Show parser help while quick-capture has focus so discoverability does not add constant visual noise.
+  document.addEventListener('focusin', (event) => {
+    if (event.target.closest('[data-quick-capture]')) {
+      uiState.captureKeyVisible = true;
+      store.emit();
+    }
+  });
+
+  document.addEventListener('focusout', (event) => {
+    const quickCapture = event.target.closest('[data-quick-capture]');
+    if (!quickCapture) return;
+
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && quickCapture.contains(nextTarget)) return;
+
+    uiState.captureKeyVisible = false;
+    store.emit();
   });
 
   document.addEventListener('click', async (event) => {
