@@ -8,6 +8,9 @@ function personPendingUpdates(state, personId) {
     .map((group) => group.title);
 }
 
+/**
+ * Renders compact task rows for the current wireframe data set.
+ */
 function renderTasks(state) {
   return `
     <div>
@@ -23,9 +26,38 @@ function renderTasks(state) {
   `;
 }
 
+/**
+ * Projects render with owned task counts so the list is immediately useful,
+ * even for lightly-populated demo data.
+ */
+function renderProjects(state) {
+  if (!state.projects.length) {
+    return '<p class="muted">No projects yet. Process inbox items as projects to build this list.</p>';
+  }
+
+  return `
+    <div class="row-list">
+      ${state.projects.map((project) => {
+        const taskCount = state.tasks.filter((task) => (task.linkedProjects || []).includes(project.id)).length;
+        return `
+          <article class="row">
+            <div>
+              <strong>${escapeHtml(project.name)}</strong>
+              <div class="muted">Status: ${escapeHtml(project.status || 'active')} · Linked tasks: ${taskCount}</div>
+            </div>
+          </article>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
 function renderPeople(state, selectedId) {
   const selected = state.people.find((p) => p.id === selectedId) || state.people[0];
   const pending = selected ? personPendingUpdates(state, selected.id) : [];
+  const selectedGroups = selected
+    ? state.followUps.filter((group) => group.recipients.some((recipient) => recipient.personId === selected.id))
+    : [];
 
   return `
     <div class="cols">
@@ -44,29 +76,32 @@ function renderPeople(state, selectedId) {
           <div class="row-list">
             ${pending.map((entry) => `<article class="row">${escapeHtml(entry)}</article>`).join('') || '<p class="muted">No pending updates.</p>'}
           </div>
+          <h4>Follow-up tracking</h4>
+          <div class="row-list">
+            ${selectedGroups.map((group) => {
+              const recipient = group.recipients.find((item) => item.personId === selected.id);
+              const isComplete = recipient?.status === 'complete';
+              return `
+                <article class="row">
+                  <div>
+                    <strong>${escapeHtml(group.title)}</strong>
+                    <div class="muted">Status: ${escapeHtml(recipient?.status || 'pending')}</div>
+                  </div>
+                  <button
+                    class="inline-button"
+                    type="button"
+                    data-followup-group-id="${group.id}"
+                    data-followup-person-id="${selected.id}"
+                    aria-pressed="${isComplete ? 'true' : 'false'}"
+                  >
+                    ${isComplete ? 'Mark pending' : 'Mark complete'}
+                  </button>
+                </article>
+              `;
+            }).join('') || '<p class="muted">No follow-ups assigned to this person.</p>'}
+          </div>
         ` : '<p class="muted">No person selected.</p>'}
       </section>
-    </div>
-  `;
-}
-
-
-function renderLogs(state) {
-  if (!state.dailyLogs?.length) {
-    return '<p class="muted">No Daily Logs yet. Run Close mode to generate closure history.</p>';
-  }
-
-  return `
-    <div class="row-list">
-      ${state.dailyLogs.map((log) => `
-        <article class="row">
-          <div>
-            <strong>${escapeHtml(log.createdAt)}</strong>
-            <div class="muted">Planned: ${log.plannedCount} · Completed: ${log.completed.length} · Incomplete: ${log.incomplete.length}</div>
-            <div class="muted">Incomplete updates: ${log.incomplete.map((item) => `${escapeHtml(item.title)} (${escapeHtml(item.lastUpdate?.text || 'No update')})`).join(' · ') || 'none'}</div>
-          </div>
-        </article>
-      `).join('')}
     </div>
   `;
 }
@@ -93,11 +128,85 @@ function renderMeetings(state, selectedId) {
           <div class="row-list">
             ${groups.map((group) => `<article class="row"><div><strong>${escapeHtml(group.title)}</strong><div class="row-meta muted">${group.recipients.map((recipient) => {
               const person = state.people.find((p) => p.id === recipient.personId);
-              return `${person?.name ?? recipient.personId}: ${recipient.status}`;
-            }).join(' · ')}</div></div><button class="inline-button" type="button">Toggle recipient complete</button></article>`).join('') || '<p class="muted">No follow-ups created yet.</p>'}
+              const isComplete = recipient.status === 'complete';
+              return `
+                <button
+                  class="inline-button"
+                  type="button"
+                  data-followup-group-id="${group.id}"
+                  data-followup-person-id="${recipient.personId}"
+                  aria-pressed="${isComplete ? 'true' : 'false'}"
+                >
+                  ${escapeHtml(person?.name ?? recipient.personId)}: ${escapeHtml(recipient.status)}
+                </button>
+              `;
+            }).join('')}</div></div></article>`).join('') || '<p class="muted">No follow-ups created yet.</p>'}
           </div>
         ` : '<p class="muted">No meeting selected.</p>'}
       </section>
+    </div>
+  `;
+}
+
+function renderReminders(state) {
+  if (!state.reminders.length) {
+    return '<p class="muted">No reminders yet. Capture one with type:reminder to populate this section.</p>';
+  }
+
+  return `
+    <div class="row-list">
+      ${state.reminders.map((reminder) => `
+        <article class="row">
+          <div>
+            <strong>${escapeHtml(reminder.title)}</strong>
+            <div class="muted">Status: ${escapeHtml(reminder.status || 'pending')} · Due: ${escapeHtml(reminder.due || 'unscheduled')}</div>
+          </div>
+        </article>
+      `).join('')}
+    </div>
+  `;
+}
+
+/**
+ * Habits are not yet first-class entities in state, but the Library should
+ * still show a truthful, functional section instead of placeholder copy.
+ */
+function renderHabits(state) {
+  const habits = Array.isArray(state.habits) ? state.habits : [];
+  if (!habits.length) {
+    return '<p class="muted">No habits tracked yet. Habit support can be added without changing this navigation flow.</p>';
+  }
+
+  return `
+    <div class="row-list">
+      ${habits.map((habit) => `
+        <article class="row">
+          <div>
+            <strong>${escapeHtml(habit.title || habit.name || 'Untitled habit')}</strong>
+            <div class="muted">Cadence: ${escapeHtml(habit.cadence || 'not set')} · Status: ${escapeHtml(habit.status || 'active')}</div>
+          </div>
+        </article>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderLogs(state) {
+  if (!state.dailyLogs?.length) {
+    return '<p class="muted">No Daily Logs yet. Run Close mode to generate closure history.</p>';
+  }
+
+  return `
+    <div class="row-list">
+      ${state.dailyLogs.map((log) => `
+        <article class="row">
+          <div>
+            <strong>${escapeHtml(log.createdAt)}</strong>
+            <div class="muted">Planned: ${log.plannedCount} · Completed: ${log.completed.length} · Incomplete: ${log.incomplete.length}</div>
+            <div class="muted">Incomplete updates: ${log.incomplete.map((item) => `${escapeHtml(item.title)} (${escapeHtml(item.lastUpdate?.text || 'No update')})`).join(' · ') || 'none'}</div>
+          </div>
+        </article>
+      `).join('')}
     </div>
   `;
 }
@@ -108,12 +217,12 @@ export function renderLibrary(state, routeParts) {
 
   let body = '<p class="muted">Select a library section.</p>';
   if (section === 'tasks') body = renderTasks(state);
+  if (section === 'projects') body = renderProjects(state);
   if (section === 'people') body = renderPeople(state, selectedId);
   if (section === 'meetings') body = renderMeetings(state, selectedId);
+  if (section === 'reminders') body = renderReminders(state);
+  if (section === 'habits') body = renderHabits(state);
   if (section === 'logs') body = renderLogs(state);
-  if (['projects', 'reminders', 'habits'].includes(section)) {
-    body = `<p class="muted">${titleCase(section)} list placeholder for wireframe.</p>`;
-  }
 
   return `
     <div class="library-grid">

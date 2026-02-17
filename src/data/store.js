@@ -527,6 +527,30 @@ export class AppStore {
     this.emit();
   }
 
+  /**
+   * Toggles a single follow-up recipient between pending and complete states.
+   */
+  async toggleFollowUpRecipient(groupId, personId) {
+    if (!groupId || !personId) return;
+
+    const group = this.state.followUps.find((entry) => entry.id === groupId);
+    if (!group || !Array.isArray(group.recipients)) return;
+
+    const recipient = group.recipients.find((entry) => entry.personId === personId);
+    if (!recipient) return;
+
+    const nextStatus = recipient.status === 'complete' ? 'pending' : 'complete';
+    recipient.status = nextStatus;
+
+    // Keep aggregate follow-up status in sync so list/detail views can reflect completion at a glance.
+    const hasPending = group.recipients.some((entry) => entry.status !== 'complete');
+    updateStampedField(group, 'recipients', group.recipients, getDeviceId());
+    updateStampedField(group, 'status', hasPending ? 'pending' : 'complete', getDeviceId());
+
+    await this.persist();
+    this.emit();
+  }
+
   findOrCreatePerson(name, provenance) {
     const key = slugify(name);
     const existing = this.state.people.find((person) => slugify(person.name) === key);
