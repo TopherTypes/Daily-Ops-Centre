@@ -311,12 +311,74 @@ function migrateStateToCurrentSchema(state, schemaVersion, deviceId) {
 }
 
 /**
- * Deterministic token parser for the documented capture syntax.
- *
- * Intentionally avoids heuristics in this phase so contributors can safely
- * layer inference rules later without changing current behavior.
+ * Returns YYYY-MM-DD in local time so date heuristics remain stable for users.
  */
-function parseCaptureTokens(rawText) {
+function toLocalIsoDate(dateLike) {
+  const date = dateLike instanceof Date ? dateLike : new Date(dateLike);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Pure helper that infers a schedule date from relative terms.
+ *
+ * Supported terms:
+ * - today -> reference date
+ * - tomorrow -> reference date + 1 day
+ */
+export function inferRelativeScheduleDate(rawText, referenceDate = new Date()) {
+  const text = String(rawText || '').toLowerCase();
+  const todayIndex = text.search(/\btoday\b/);
+  const tomorrowIndex = text.search(/\btomorrow\b/);
+
+  if (todayIndex === -1 && tomorrowIndex === -1) return '';
+
+  const shouldUseToday = todayIndex !== -1 && (tomorrowIndex === -1 || todayIndex < tomorrowIndex);
+  const base = new Date(referenceDate);
+  if (!shouldUseToday) {
+    base.setDate(base.getDate() + 1);
+  }
+
+  return toLocalIsoDate(base);
+}
+
+/**
+ * Pure helper that suggests a meeting conversion from common meeting language.
+ */
+export function inferMeetingSuggestion(rawText) {
+  const text = String(rawText || '').toLowerCase();
+  const meetingPhrasePatterns = [
+    /\bmeeting\b/,
+    /\b1:1\b/,
+    /\b1-1\b/,
+    /\bone[-\s]on[-\s]one\b/,
+    /\bsync\b/,
+    /\bstand[-\s]?up\b/,
+    /\bcheck[-\s]?in\b/,
+    /\bcatch[-\s]?up\b/,
+    /\bcall\b/
+  ];
+
+  return meetingPhrasePatterns.some((pattern) => pattern.test(text));
+}
+
+/**
+ * Runs opt-in deterministic heuristics so explicit tokens can still take precedence.
+ */
+export function extractCaptureHeuristics(rawText, referenceDate = new Date()) {
+  return {
+    scheduleDate: inferRelativeScheduleDate(rawText, referenceDate),
+    type: inferMeetingSuggestion(rawText) ? 'meeting' : ''
+  };
+}
+
+/**
+ * Deterministic token parser for the documented capture syntax.
+ */
+export function parseCaptureTokens(rawText, options = {}) {
+  const { enableHeuristics = false, referenceDate = new Date() } = options;
   const people = [...rawText.matchAll(/(^|\s)@([A-Za-z0-9][\w-]*)/g)].map((match) => match[2]);
   const projects = [...rawText.matchAll(/(^|\s)#([A-Za-z0-9][\w-]*)/g)].map((match) => match[2]);
   const priorityMatch = rawText.match(/(^|\s)!p([1-5])(\s|$)/i);
@@ -324,15 +386,20 @@ function parseCaptureTokens(rawText) {
   const doMatch = rawText.match(/(^|\s)do:(\d{4}-\d{2}-\d{2})(\s|$)/i);
   const typeMatch = rawText.match(/(^|\s)type:(task|meeting|note|reminder|followup|project|person)(\s|$)/i);
   const contextMatch = rawText.match(/(^|\s)(work|personal):(\s|$)/i);
+  const heuristics = enableHeuristics ? extractCaptureHeuristics(rawText, referenceDate) : { scheduleDate: '', type: '' };
 
   return {
     people,
     projects,
     priority: priorityMatch ? Number(priorityMatch[2]) : null,
     dueDate: dueMatch?.[2] || '',
-    scheduleDate: doMatch?.[2] || '',
-    type: typeMatch?.[2]?.toLowerCase() || '',
-    context: contextMatch?.[2]?.toLowerCase() || ''
+    scheduleDate: doMatch?.[2] || heuristics.scheduleDate,
+    type: typeMatch?.[2]?.toLowerCase() || heuristics.type,
+    context: contextMatch?.[2]?.toLowerCase() || '',
+    inferred: {
+      scheduleDate: doMatch?.[2] ? '' : heuristics.scheduleDate,
+      type: typeMatch?.[2] ? '' : heuristics.type
+    }
   };
 }
 
@@ -594,7 +661,7 @@ export class AppStore {
     if (!inboxItem) return;
 
     const inboxRaw = getStampedValue(inboxItem, 'raw', inboxItem.raw) || '';
-    const parsed = parseCaptureTokens(inboxRaw);
+    const parsed = parseCaptureTokens(inboxRaw, { enableHeuristics: true });
     const now = new Date().toISOString();
     const deviceId = getDeviceId();
     const provenance = {
