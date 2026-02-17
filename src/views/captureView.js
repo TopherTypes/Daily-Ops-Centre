@@ -1,20 +1,36 @@
 import { escapeHtml } from '../utils/format.js';
 
-function processingFields() {
+function processingFields(item) {
   return `
-    <div class="inline-editor" data-inline-processor>
+    <div class="inline-editor" data-inline-processor data-inbox-id="${item.id}">
       <div class="inline-fields">
         <span class="muted">Convert to:</span>
-        ${['Task', 'Reminder', 'Meeting', 'Person', 'Project', 'Follow-up', 'Note'].map((target) => `<button class="inline-button" type="button">${target}</button>`).join('')}
+        ${[
+          ['task', 'Task'],
+          ['reminder', 'Reminder'],
+          ['meeting', 'Meeting'],
+          ['person', 'Person'],
+          ['project', 'Project'],
+          ['followup', 'Follow-up'],
+          ['note', 'Note']
+        ].map(([value, label]) => `<button class="inline-button" data-process-target="${value}" data-id="${item.id}" type="button">${label}</button>`).join('')}
       </div>
       <div class="inline-fields">
-        <input class="input" placeholder="People (@name)" />
-        <input class="input" placeholder="Project (#name)" />
-        <select class="select"><option>work</option><option>personal</option></select>
-        <input class="input" placeholder="due / scheduled date" />
-        <select class="select"><option>priority p1</option><option>priority p2</option><option>priority p3</option></select>
+        <input class="input" name="people" data-process-field="people" placeholder="People (@name, @name2)" />
+        <input class="input" name="project" data-process-field="project" placeholder="Project (#name)" />
+        <select class="select" name="context" data-process-field="context">
+          <option value="">context…</option>
+          <option value="work">work</option>
+          <option value="personal">personal</option>
+        </select>
+        <input class="input" name="dueDate" data-process-field="dueDate" placeholder="due:YYYY-MM-DD" />
+        <input class="input" name="scheduleDate" data-process-field="scheduleDate" placeholder="do:YYYY-MM-DD" />
+        <select class="select" name="priority" data-process-field="priority">
+          <option value="">priority…</option>
+          <option value="1">p1</option><option value="2">p2</option><option value="3">p3</option><option value="4">p4</option><option value="5">p5</option>
+        </select>
       </div>
-      <div class="muted">Placeholder only for wireframe: inline processing and follow-up creation target.</div>
+      <div class="muted">Token syntax in raw text is also honored (@person #project !p1..p5 due:/do: type: work:/personal:).</div>
     </div>
   `;
 }
@@ -46,7 +62,7 @@ export function renderCapture(state, uiState) {
                 <strong>${escapeHtml(item.raw)}</strong>
               </div>
               <div class="row-meta muted">id: ${item.id}</div>
-              ${uiState.processingInboxId === item.id ? processingFields() : ''}
+              ${uiState.processingInboxId === item.id ? processingFields(item) : ''}
             </div>
             <div class="inline-actions">
               <button class="inline-button" data-action="process" data-id="${item.id}" type="button">Process</button>
