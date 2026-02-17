@@ -55,12 +55,13 @@ function processingFields(item) {
 }
 
 export function renderCapture(state, uiState) {
-  const activeTab = uiState.captureTab || 'unprocessed';
+  const activeTab = uiState.captureTab || 'all';
   const inboxItems = state.inbox.filter((item) => {
     if (item.deleted) return false;
     if (activeTab === 'archived') return item.archived;
     if (activeTab === 'processed') return !item.archived && Boolean(item.processedAt);
-    return !item.archived && !item.processedAt;
+    if (activeTab === 'unprocessed') return !item.archived && !item.processedAt;
+    return !item.archived;
   });
 
   return `
@@ -74,6 +75,7 @@ export function renderCapture(state, uiState) {
         <button class="button" type="submit">Capture</button>
       </form>
       <div class="tabs" style="margin:0.5rem 0;">
+        <button data-tab="all" class="button">All inbox</button>
         <button data-tab="unprocessed" class="button">Unprocessed</button>
         <button data-tab="processed" class="button">Processed</button>
         <button data-tab="archived" class="button">Archived</button>

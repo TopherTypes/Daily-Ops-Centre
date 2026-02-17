@@ -1546,6 +1546,68 @@ export class AppStore {
     return ok();
   }
 
+
+  /**
+   * Updates editable fields for non-meeting Library entities.
+   *
+   * The collection-specific switch keeps validation explicit and prevents
+   * accidental writes to unsupported collections.
+   */
+  async updateLibraryEntity(collection, id, fields = {}) {
+    this.ensureCollections();
+    const previousState = structuredClone(this.state);
+
+    const collectionKey = (collection || '').trim();
+    const allowedCollections = new Set(['tasks', 'projects', 'people', 'reminders']);
+    if (!allowedCollections.has(collectionKey)) {
+      return fail('LIBRARY_COLLECTION_UNSUPPORTED', 'Collection is not editable from this form.', { collection });
+    }
+
+    const idResult = validateId(id, 'id');
+    if (!idResult.ok) return idResult;
+
+    const entity = this.state[collectionKey].find((entry) => entry.id === idResult.value && !isDeletedEntity(entry));
+    if (!entity) return fail('LIBRARY_ENTITY_NOT_FOUND', 'Entity not found or already deleted.', { collection, id });
+
+    const now = new Date().toISOString();
+    const deviceId = getDeviceId();
+
+    if (collectionKey === 'tasks' || collectionKey === 'reminders') {
+      const titleResult = normalizeRequiredText(fields.title || entity.title || '', 'title', entity.title || 'Untitled');
+      if (!titleResult.ok) return titleResult;
+
+      const dueDateResult = normalizeIsoDate(fields.dueDate, 'dueDate');
+      if (!dueDateResult.ok) return dueDateResult;
+      const scheduleDateResult = normalizeIsoDate(fields.scheduleDate, 'scheduleDate');
+      if (!scheduleDateResult.ok) return scheduleDateResult;
+
+      updateStampedField(entity, 'title', titleResult.value, deviceId, now);
+      updateStampedField(entity, 'status', fields.status || entity.status || (collectionKey === 'tasks' ? 'backlog' : 'pending'), deviceId, now);
+      updateStampedField(entity, 'due', dueDateResult.value, deviceId, now);
+      updateStampedField(entity, 'scheduled', scheduleDateResult.value, deviceId, now);
+      updateStampedField(entity, 'priority', Number(fields.priority || entity.priority || 3), deviceId, now);
+      updateStampedField(entity, 'context', fields.context || entity.context || 'work', deviceId, now);
+    }
+
+    if (collectionKey === 'projects') {
+      const nameResult = normalizeRequiredText(fields.name || entity.name || '', 'name', entity.name || 'Untitled project');
+      if (!nameResult.ok) return nameResult;
+      updateStampedField(entity, 'name', nameResult.value, deviceId, now);
+      updateStampedField(entity, 'status', fields.status || entity.status || 'active', deviceId, now);
+    }
+
+    if (collectionKey === 'people') {
+      const nameResult = normalizeRequiredText(fields.name || entity.name || '', 'name', entity.name || 'Unnamed person');
+      if (!nameResult.ok) return nameResult;
+      updateStampedField(entity, 'name', nameResult.value, deviceId, now);
+      updateStampedField(entity, 'email', fields.email || '', deviceId, now);
+      updateStampedField(entity, 'phone', fields.phone || '', deviceId, now);
+    }
+
+    await this.commitStateMutation(previousState, 'update_library_entity');
+    return ok();
+  }
+
   /**
    * Updates editable meeting fields from the Library detail panel.
    *
@@ -1565,9 +1627,14 @@ export class AppStore {
     const titleResult = normalizeRequiredText(fields.title || meeting.title || '', 'title', meeting.title || 'Untitled meeting');
     if (!titleResult.ok) return titleResult;
 
+    // Date validation keeps meeting scheduling consistent with existing ISO date-only fields.
+    const scheduleDateResult = normalizeIsoDate(fields.scheduleDate, 'scheduleDate');
+    if (!scheduleDateResult.ok) return scheduleDateResult;
+
     const now = new Date().toISOString();
     const deviceId = getDeviceId();
     updateStampedField(meeting, 'title', titleResult.value, deviceId, now);
+    updateStampedField(meeting, 'scheduled', scheduleDateResult.value, deviceId, now);
     updateStampedField(meeting, 'time', fields.time || '', deviceId, now);
     updateStampedField(meeting, 'meetingType', fields.meetingType || 'group', deviceId, now);
     updateStampedField(meeting, 'agenda', fields.agenda || '', deviceId, now);

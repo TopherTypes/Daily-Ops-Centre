@@ -12,7 +12,7 @@ const store = new AppStore();
 
 const uiState = {
   route: '/capture',
-  captureTab: 'unprocessed',
+  captureTab: 'all',
   processingInboxId: null,
   executeNoteItemId: null,
   backupNotice: null,
@@ -366,10 +366,33 @@ function bindGlobalEvents() {
     const executeNoteForm = event.target.closest('[data-execute-note-form]');
     const closeNoteForm = event.target.closest('[data-close-note-form]');
     const libraryMeetingForm = event.target.closest('[data-library-meeting-form]');
-    if (!quickCapture && !captureForm && !executeNoteForm && !closeNoteForm && !libraryMeetingForm) return;
+    const libraryEntityForm = event.target.closest('[data-library-entity-form]');
+    if (!quickCapture && !captureForm && !executeNoteForm && !closeNoteForm && !libraryMeetingForm && !libraryEntityForm) return;
 
     event.preventDefault();
 
+
+
+    if (libraryEntityForm) {
+      const collection = libraryEntityForm.dataset.collection;
+      const entityId = libraryEntityForm.dataset.id;
+      if (!collection || !entityId) return;
+
+      // Generic Library form path keeps non-meeting detail edits consistent across sections.
+      const formData = new FormData(libraryEntityForm);
+      await performStoreOperation('Library entity save', () => store.updateLibraryEntity(collection, entityId, {
+        title: String(formData.get('title') || '').trim(),
+        name: String(formData.get('name') || '').trim(),
+        status: String(formData.get('status') || '').trim(),
+        dueDate: String(formData.get('dueDate') || '').trim(),
+        scheduleDate: String(formData.get('scheduleDate') || '').trim(),
+        priority: String(formData.get('priority') || '').trim(),
+        context: String(formData.get('context') || '').trim(),
+        email: String(formData.get('email') || '').trim(),
+        phone: String(formData.get('phone') || '').trim()
+      }));
+      return;
+    }
 
     if (libraryMeetingForm) {
       const meetingId = libraryMeetingForm.dataset.id;
@@ -379,6 +402,7 @@ function bindGlobalEvents() {
       const formData = new FormData(libraryMeetingForm);
       await performStoreOperation('Meeting save', () => store.updateMeeting(meetingId, {
         title: String(formData.get('title') || '').trim(),
+        scheduleDate: String(formData.get('scheduleDate') || '').trim(),
         time: String(formData.get('time') || '').trim(),
         meetingType: String(formData.get('meetingType') || 'group').trim(),
         agenda: String(formData.get('agenda') || '').trim(),
