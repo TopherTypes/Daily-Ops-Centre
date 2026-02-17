@@ -17,7 +17,8 @@ const uiState = {
   executeNoteItemId: null,
   backupNotice: null,
   startupRolloverNotice: null,
-  persistenceNotice: null
+  persistenceNotice: null,
+  storageActionNotice: null
 };
 
 // Tracks dialog-specific accessibility state across route transitions/rerenders.
@@ -110,6 +111,17 @@ function syncLibraryModalAccessibility(route) {
   }
 }
 
+
+function getStorageStatusMeta(status) {
+  const statusMap = {
+    loading: { label: 'Storage: loading', className: 'storage-loading' },
+    ready: { label: 'Storage: ready', className: 'storage-ready' },
+    degraded: { label: 'Storage: degraded', className: 'storage-degraded' }
+  };
+
+  return statusMap[status] || statusMap.loading;
+}
+
 function setBackupNotice(type, message) {
   // Global import/export notifications are displayed in the top bar so they are visible in every mode.
   uiState.backupNotice = { type, message };
@@ -128,6 +140,21 @@ function syncPersistenceNotice() {
     type: 'warn',
     message: persistence.lastError || 'Persistence degraded: local saves may fail until storage access recovers.'
   };
+}
+
+async function retryStorageInitializationFromUi() {
+  uiState.storageActionNotice = { type: 'warn', message: 'Retrying storage initialization…' };
+  store.emit();
+
+  const result = await store.retryStorageInitialization();
+  if (result.ok) {
+    uiState.storageActionNotice = { type: 'ok', message: 'Storage recovered. Local persistence is ready.' };
+  } else {
+    uiState.storageActionNotice = { type: 'warn', message: 'Storage retry failed. Keep this tab open and export a backup.' };
+  }
+
+  syncPersistenceNotice();
+  store.emit();
 }
 
 async function performStoreOperation(operationName, operation) {
@@ -206,6 +233,7 @@ function renderShell(state) {
   const mode = route.split('/')[1] || 'capture';
   const hideQuickCapture = mode === 'close';
   const routeParts = route.split('/');
+  const storageMeta = getStorageStatusMeta(state.storageStatus);
 
   let content = '';
   if (mode === 'capture') content = renderCapture(state, uiState);
@@ -223,6 +251,7 @@ function renderShell(state) {
           ${['capture', 'plan', 'execute', 'close'].map((item) => `<a class="mode-link ${mode === item ? 'active' : ''}" href="#/${item}">${item[0].toUpperCase() + item.slice(1)}</a>`).join('')}
           <a class="mode-link library" href="#/library/tasks">Library</a>
           <span class="muted">Device: ${getDeviceId()}</span>
+          <span class="storage-badge ${storageMeta.className}" data-storage-badge>${storageMeta.label}</span>
           <div class="backup-controls">
             <button class="button" type="button" data-backup-action="export">Export</button>
             <button class="button" type="button" data-backup-action="import">Import</button>
@@ -230,7 +259,8 @@ function renderShell(state) {
           </div>
         </nav>
         <p class="status-text ${uiState.backupNotice?.type || ''}" role="status" aria-live="polite">${uiState.backupNotice?.message || 'Backup tools are always available in this top bar.'}</p>
-        ${uiState.persistenceNotice ? `<p class="status-text ${uiState.persistenceNotice.type}" role="status" aria-live="polite" data-persistence-status>${uiState.persistenceNotice.message}</p>` : ''}
+        ${uiState.persistenceNotice ? `<p class="status-text ${uiState.persistenceNotice.type}" role="status" aria-live="polite" data-persistence-status>${uiState.persistenceNotice.message} ${state.storageStatus === 'degraded' ? '<button class="button" type="button" data-storage-retry style="margin-left:0.45rem;">Retry storage</button>' : ''}</p>` : ''}
+        ${uiState.storageActionNotice ? `<p class="status-text ${uiState.storageActionNotice.type}" role="status" aria-live="polite">${uiState.storageActionNotice.message}</p>` : ''}
         ${uiState.startupRolloverNotice ? `
           <p class="status-text warn" role="status" aria-live="polite" data-startup-rollover-banner>
             Today was reset for a new day (${uiState.startupRolloverNotice.previousDate} → ${uiState.startupRolloverNotice.currentDate}).
@@ -385,6 +415,12 @@ function bindGlobalEvents() {
       return;
     }
 
+    const storageRetryButton = event.target.closest('[data-storage-retry]');
+    if (storageRetryButton) {
+      await retryStorageInitializationFromUi();
+      return;
+    }
+
     const backupButton = event.target.closest('[data-backup-action]');
     if (backupButton) {
       const action = backupButton.dataset.backupAction;
@@ -484,6 +520,10 @@ function bindGlobalEvents() {
       } else if (action === 'close-day') {
         const result = await store.closeDay();
         if (!result.ok) {
+          if (result.reason === 'storage_degraded') {
+            window.alert(result.message || 'Close blocked: storage is degraded. Retry storage initialization first.');
+            return;
+          }
           const blockerCounts = {
             missingTodayNotes: result.readiness?.missingTodayNotes?.length || 0,
             unprocessedInbox: result.readiness?.unprocessedInbox?.length || 0,
