@@ -365,9 +365,27 @@ function bindGlobalEvents() {
     const captureForm = event.target.closest('[data-capture-form]');
     const executeNoteForm = event.target.closest('[data-execute-note-form]');
     const closeNoteForm = event.target.closest('[data-close-note-form]');
-    if (!quickCapture && !captureForm && !executeNoteForm && !closeNoteForm) return;
+    const libraryMeetingForm = event.target.closest('[data-library-meeting-form]');
+    if (!quickCapture && !captureForm && !executeNoteForm && !closeNoteForm && !libraryMeetingForm) return;
 
     event.preventDefault();
+
+
+    if (libraryMeetingForm) {
+      const meetingId = libraryMeetingForm.dataset.id;
+      if (!meetingId) return;
+
+      // Keep form extraction explicit so field names stay aligned with store validation rules.
+      const formData = new FormData(libraryMeetingForm);
+      await performStoreOperation('Meeting save', () => store.updateMeeting(meetingId, {
+        title: String(formData.get('title') || '').trim(),
+        time: String(formData.get('time') || '').trim(),
+        meetingType: String(formData.get('meetingType') || 'group').trim(),
+        agenda: String(formData.get('agenda') || '').trim(),
+        notes: String(formData.get('notes') || '').trim()
+      }));
+      return;
+    }
 
     if (closeNoteForm) {
       const itemId = closeNoteForm.dataset.id;

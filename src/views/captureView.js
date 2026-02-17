@@ -1,6 +1,14 @@
 import { escapeHtml } from '../utils/format.js';
 import { parseCaptureTokens } from '../data/store.js';
 
+const LIBRARY_SECTION_BY_PROCESSED_TYPE = {
+  task: 'tasks',
+  reminder: 'reminders',
+  meeting: 'meetings',
+  person: 'people',
+  project: 'projects'
+};
+
 function processingFields(item) {
   // Prefill inline processor controls from explicit tokens and opt-in heuristics.
   const parsed = parseCaptureTokens(item.raw || '', { enableHeuristics: true });
@@ -50,7 +58,9 @@ export function renderCapture(state, uiState) {
   const activeTab = uiState.captureTab || 'unprocessed';
   const inboxItems = state.inbox.filter((item) => {
     if (item.deleted) return false;
-    return activeTab === 'archived' ? item.archived : !item.archived;
+    if (activeTab === 'archived') return item.archived;
+    if (activeTab === 'processed') return !item.archived && Boolean(item.processedAt);
+    return !item.archived && !item.processedAt;
   });
 
   return `
@@ -65,6 +75,7 @@ export function renderCapture(state, uiState) {
       </form>
       <div class="tabs" style="margin:0.5rem 0;">
         <button data-tab="unprocessed" class="button">Unprocessed</button>
+        <button data-tab="processed" class="button">Processed</button>
         <button data-tab="archived" class="button">Archived</button>
       </div>
       <div class="row-list">
@@ -74,6 +85,7 @@ export function renderCapture(state, uiState) {
               <div class="inline-fields">
                 <span class="chip">${escapeHtml(item.type)}</span>
                 ${item.snoozed ? '<span class="chip">snoozed</span>' : ''}
+                ${item.processedAt ? `<span class="chip">processed → ${escapeHtml(item.processedType || 'task')}</span>` : ''}
                 <strong>${escapeHtml(item.raw)}</strong>
               </div>
               <div class="row-meta muted">id: ${item.id}</div>
@@ -83,6 +95,7 @@ export function renderCapture(state, uiState) {
               <button class="inline-button" data-action="process" data-id="${item.id}" type="button">Process</button>
               <button class="inline-button" data-action="snooze" data-id="${item.id}" type="button">${item.snoozed ? 'Unsnooze' : 'Snooze'}</button>
               <button class="inline-button" data-action="archive" data-id="${item.id}" type="button">${item.archived ? 'Unarchive' : 'Archive'}</button>
+              ${item.processedEntityId && LIBRARY_SECTION_BY_PROCESSED_TYPE[item.processedType] ? `<a class="inline-button" href="#/library/${LIBRARY_SECTION_BY_PROCESSED_TYPE[item.processedType]}/${escapeHtml(item.processedEntityId)}">Open in Library</a>` : ''}
               <button class="inline-button" data-request-delete="inbox" data-delete-mode="soft" data-id="${item.id}" type="button">Request delete</button>
             </div>
           </article>
