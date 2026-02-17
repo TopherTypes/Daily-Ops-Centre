@@ -24,20 +24,23 @@ function renderExecutionMeta(item) {
 function renderGroup(name, rows) {
   return `
     <section class="type-group">
-      <h3>${name}</h3>
-      <div class="row-list" data-nav-list="execute" style="margin-top:0.35rem;">
+      <div class="view-header" style="margin-bottom:0.35rem;">
+        <h3>${name}</h3>
+        <span class="chip">${rows.length}</span>
+      </div>
+      <div class="row-list" data-nav-list="execute">
         ${rows.map((item) => `
           <article class="row" tabindex="0" data-nav-row data-row-type="execute-item" data-today-id="${item.id}">
             <div class="row-main">
               <strong>${escapeHtml(item.title)}</strong>
               <div class="row-meta muted">${escapeHtml(renderExecutionMeta(item))}</div>
-              <button type="button" class="inline-button" data-note-toggle="${item.id}">Add update note</button>
+              <button type="button" class="inline-button btn-ghost" aria-expanded="${item.noteOpen ? 'true' : 'false'}" data-note-toggle="${item.id}">Add update note</button>
               ${item.noteOpen ? `
-                <form data-execute-note-form data-id="${item.id}" class="stack" style="margin-top:0.35rem;">
+                <form data-execute-note-form data-id="${item.id}" class="stack" style="margin-top:0.3rem; display:grid; gap:0.3rem;">
                   <textarea class="textarea" rows="2" name="note" aria-label="Update note" placeholder="Add short update note..." required></textarea>
                   <button
                     type="submit"
-                    class="inline-button"
+                    class="inline-button btn-primary"
                     data-action="add-note"
                     data-id="${item.id}"
                     data-status="note-added"
@@ -47,11 +50,11 @@ function renderGroup(name, rows) {
                 </form>
               ` : ''}
             </div>
-            <div class="inline-actions">
+            <div class="inline-actions segmented" role="group" aria-label="Set execution status for ${escapeHtml(item.title)}">
               ${ACTIONS.map((itemAction) => `
                 <button
                   type="button"
-                  class="inline-button"
+                  class="inline-button ${itemAction.action === 'archive' ? 'btn-danger' : 'btn-secondary'}"
                   data-execute-action="${itemAction.action}"
                   data-action="${itemAction.action}"
                   data-id="${item.id}"
@@ -62,7 +65,7 @@ function renderGroup(name, rows) {
               `).join('')}
             </div>
           </article>
-        `).join('') || '<p class="muted">No items.</p>'}
+        `).join('') || '<p class="empty-state">No items.</p>'}
       </div>
     </section>
   `;
@@ -80,7 +83,7 @@ export function renderExecute(state, uiState) {
     <section>
       <div class="view-header">
         <h1>Execute</h1>
-        <p class="muted">Use action buttons to record execution status and notes.</p>
+        <p class="muted">Set execution state quickly, then add concise update notes.</p>
       </div>
       ${renderGroup('Tasks', tasks)}
       ${renderGroup('Meetings', meetings)}

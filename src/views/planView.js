@@ -9,8 +9,11 @@ function isPlanVisible(item) {
 function renderSuggestionColumn(name, items, todaySuggestionIds) {
   return `
     <section class="col">
-      <h3>${name}</h3>
-      <div class="row-list" data-nav-list="plan-suggestions" style="margin-top:0.35rem;">
+      <div class="view-header" style="margin-bottom:0.35rem;">
+        <h3>${name}</h3>
+        <span class="chip">${items.length}</span>
+      </div>
+      <div class="row-list" data-nav-list="plan-suggestions">
         ${items.map((item) => {
           const alreadyInToday = todaySuggestionIds.has(item.id);
           return `
@@ -28,7 +31,7 @@ function renderSuggestionColumn(name, items, todaySuggestionIds) {
               </div>
               <div class="inline-actions">
                 <button
-                  class="inline-button"
+                  class="inline-button ${alreadyInToday ? 'btn-secondary' : 'btn-primary'}"
                   data-add-today="${item.id}"
                   data-bucket="${name.toLowerCase()}"
                   type="button"
@@ -39,7 +42,7 @@ function renderSuggestionColumn(name, items, todaySuggestionIds) {
               </div>
             </article>
           `;
-        }).join('') || '<p class="muted">No suggestions yet.</p>'}
+        }).join('') || '<p class="empty-state">No suggestions yet.</p>'}
       </div>
     </section>
   `;
@@ -54,29 +57,35 @@ export function renderPlan(state) {
     // Arrow-only controls need explicit accessible names so SR users hear intent, not symbols.
     const escapedTitle = escapeHtml(item.title || 'Today item');
     return `
-    <article class="row" tabindex="0" data-nav-row data-row-type="plan-today" data-today-id="${item.id}">
-      <div class="row-main">
-        <strong>${escapedTitle}</strong>
-        <div class="row-meta muted">${item.bucket.toUpperCase()} · ${item.type} · ${item.meta}</div>
-      </div>
-      <div class="inline-actions">
-        <button class="inline-button" data-move="up" data-id="${item.id}" type="button" aria-label="Move ${escapedTitle} up">↑</button>
-        <button class="inline-button" data-move="down" data-id="${item.id}" type="button" aria-label="Move ${escapedTitle} down">↓</button>
-      </div>
-    </article>
-  `;
+      <article class="row" tabindex="0" data-nav-row data-row-type="plan-today" data-today-id="${item.id}">
+        <div class="row-main">
+          <strong>${escapedTitle}</strong>
+          <div class="row-meta muted">
+            <span class="chip badge-accent">${item.bucket.toUpperCase()}</span>
+            ${item.type} · ${item.meta}
+          </div>
+        </div>
+        <div class="inline-actions">
+          <button class="inline-button btn-icon btn-secondary" data-move="up" data-id="${item.id}" type="button" aria-label="Move ${escapedTitle} up">↑</button>
+          <button class="inline-button btn-icon btn-secondary" data-move="down" data-id="${item.id}" type="button" aria-label="Move ${escapedTitle} down">↓</button>
+        </div>
+      </article>
+    `;
   }).join('');
 
   return `
     <section>
       <div class="view-header">
         <h1>Plan</h1>
-        <p class="muted">M/S/K placeholders for keyboard-first ordering.</p>
+        <p class="muted">Keyboard cues: M/S/K retag selected suggestion • ↑/↓ re-order Today rows.</p>
       </div>
       <section class="col" style="margin-bottom:0.45rem;">
-        <h3>Today (starts empty)</h3>
-        <div class="row-list" data-nav-list="plan-today" style="margin-top:0.35rem;">
-          ${todayRows || '<p class="muted">Nothing in Today yet. Pull from suggestions below.</p>'}
+        <div class="view-header" style="margin-bottom:0.35rem;">
+          <h3>Today</h3>
+          <span class="chip badge-success">${todayItems.length}</span>
+        </div>
+        <div class="row-list" data-nav-list="plan-today">
+          ${todayRows || '<p class="empty-state">Nothing in Today yet. Use Add to Today on suggestions below.</p>'}
         </div>
       </section>
       <div class="cols">
