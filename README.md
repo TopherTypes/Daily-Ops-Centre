@@ -25,6 +25,10 @@ Built for GitHub Pages (no backend). Data is stored locally and can be exported/
   - `due:YYYY-MM-DD` and `do:YYYY-MM-DD` (schedule date)
   - `work:` / `personal:`
   - `type:task|meeting|note|reminder|followup|project|person`
+  - Optional deterministic heuristics (used for inline processor prefill):
+    - Relative schedule phrases: `today`, `tomorrow`
+    - Meeting suggestion phrases: `meeting`, `1:1`, `1-1`, `one on one`, `sync`, `standup` / `stand-up`, `check-in` / `check in`, `catch up`, `call`
+  - Explicit tokens always take precedence over heuristic inference.
 - Inbox items can be processed into real entities. Processing replaces the inbox item.
 
 ### 2) Plan (daily, ~08:00)
