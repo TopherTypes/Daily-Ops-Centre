@@ -15,7 +15,8 @@ const uiState = {
   captureTab: 'unprocessed',
   processingInboxId: null,
   executeNoteItemId: null,
-  backupNotice: null
+  backupNotice: null,
+  startupRolloverNotice: null
 };
 
 // Tracks dialog-specific accessibility state across route transitions/rerenders.
@@ -181,6 +182,13 @@ function renderShell(state) {
           </div>
         </nav>
         <p class="status-text ${uiState.backupNotice?.type || ''}" role="status" aria-live="polite">${uiState.backupNotice?.message || 'Backup tools are always available in this top bar.'}</p>
+        ${uiState.startupRolloverNotice ? `
+          <p class="status-text warn" role="status" aria-live="polite" data-startup-rollover-banner>
+            Today was reset for a new day (${uiState.startupRolloverNotice.previousDate} → ${uiState.startupRolloverNotice.currentDate}).
+            ${uiState.startupRolloverNotice.recoveredItemCount ? `Saved ${uiState.startupRolloverNotice.recoveredItemCount} prior item(s) to Daily Logs.` : 'No prior Today items were carried over.'}
+            <button class="button" type="button" data-dismiss-rollover-banner style="margin-left:0.6rem;">Dismiss</button>
+          </p>
+        ` : ''}
         <aside class="shortcut-panel" aria-label="Keyboard shortcut hints">
           <strong>Shortcuts:</strong>
           <span class="muted">C/P/E/L switch modes · Ctrl+Enter submits focused form · ↑/↓ move list focus · Plan: M/S/K sets Must/Should/Could</span>
@@ -315,6 +323,13 @@ function bindGlobalEvents() {
     const tabButton = event.target.closest('[data-tab]');
     if (tabButton) {
       uiState.captureTab = tabButton.dataset.tab;
+      store.emit();
+      return;
+    }
+
+    const dismissRolloverBanner = event.target.closest('[data-dismiss-rollover-banner]');
+    if (dismissRolloverBanner) {
+      uiState.startupRolloverNotice = null;
       store.emit();
       return;
     }
@@ -547,6 +562,8 @@ function bindGlobalEvents() {
 
 async function start() {
   await store.init();
+  // Startup-only notice explains why Today is empty after automatic date rollover.
+  uiState.startupRolloverNotice = store.getStartupRolloverNotice();
   bindGlobalEvents();
 
   onRouteChange((route) => {
