@@ -18,8 +18,94 @@ const uiState = {
   backupNotice: null
 };
 
+// Tracks dialog-specific accessibility state across route transitions/rerenders.
+const modalState = {
+  isOpen: false,
+  lastNonLibraryRoute: '/capture',
+  previouslyFocusedElement: null,
+  previouslyFocusedSelector: null
+};
+
 function isLibraryRoute(route) {
   return route.startsWith('/library');
+}
+
+function closeLibraryModal() {
+  goTo(modalState.lastNonLibraryRoute || '/capture');
+}
+
+function getRestoreSelector(element) {
+  if (!(element instanceof HTMLElement)) return null;
+  if (element.id) return `#${CSS.escape(element.id)}`;
+
+  const href = element.getAttribute('href');
+  if (href) return `${element.tagName.toLowerCase()}[href="${href}"]`;
+
+  const name = element.getAttribute('name');
+  if (name) return `${element.tagName.toLowerCase()}[name="${name}"]`;
+
+  const testId = element.getAttribute('data-testid');
+  if (testId) return `[data-testid="${testId}"]`;
+
+  return null;
+}
+
+function getLibraryFocusableElements() {
+  const panel = document.querySelector('[data-library-modal-panel]');
+  if (!panel) return [];
+
+  const focusableSelector = [
+    'a[href]',
+    'button:not([disabled])',
+    'input:not([disabled]):not([type="hidden"])',
+    'select:not([disabled])',
+    'textarea:not([disabled])',
+    '[tabindex]:not([tabindex="-1"])'
+  ].join(',');
+
+  return [...panel.querySelectorAll(focusableSelector)]
+    .filter((element) => !element.hasAttribute('disabled') && element.getAttribute('aria-hidden') !== 'true');
+}
+
+function focusLibraryModalEntryPoint() {
+  const panel = document.querySelector('[data-library-modal-panel]');
+  if (!panel) return;
+
+  const [firstFocusable] = getLibraryFocusableElements();
+  if (firstFocusable instanceof HTMLElement) {
+    firstFocusable.focus();
+    return;
+  }
+
+  panel.focus();
+}
+
+function syncLibraryModalAccessibility(route) {
+  const libraryOpen = isLibraryRoute(route);
+
+  if (libraryOpen && !modalState.isOpen) {
+    modalState.isOpen = true;
+    focusLibraryModalEntryPoint();
+    return;
+  }
+
+  if (!libraryOpen && modalState.isOpen) {
+    modalState.isOpen = false;
+    const focusTarget = modalState.previouslyFocusedElement;
+    const fallbackSelector = modalState.previouslyFocusedSelector;
+    modalState.previouslyFocusedElement = null;
+    modalState.previouslyFocusedSelector = null;
+
+    // Restore users to the invoking context after the modal fully closes.
+    if (focusTarget instanceof HTMLElement && focusTarget.isConnected) {
+      focusTarget.focus();
+      return;
+    }
+
+    if (fallbackSelector) {
+      document.querySelector(fallbackSelector)?.focus();
+    }
+  }
 }
 
 function setBackupNotice(type, message) {
@@ -110,9 +196,9 @@ function renderShell(state) {
       <main id="main-content" tabindex="-1">${content}</main>
     </div>
     <div class="modal ${libraryOpen ? 'open' : ''}" data-library-modal>
-      <section class="modal-panel" role="dialog" aria-modal="true" aria-label="Library">
+      <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="library-dialog-title" tabindex="-1" data-library-modal-panel>
         <div class="view-header" style="margin-bottom:0.65rem;">
-          <h2>Entity Library</h2>
+          <h2 id="library-dialog-title">Entity Library</h2>
           <button class="button" type="button" data-close-library>Close</button>
         </div>
         ${renderLibrary(state, routeParts)}
@@ -365,7 +451,7 @@ function bindGlobalEvents() {
 
     const closeLibraryButton = event.target.closest('[data-close-library]');
     if (closeLibraryButton) {
-      goTo('/capture');
+      closeLibraryModal();
       return;
     }
 
@@ -380,6 +466,49 @@ function bindGlobalEvents() {
   });
 
   document.addEventListener('keydown', async (event) => {
+    if (isLibraryRoute(uiState.route)) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeLibraryModal();
+        return;
+      }
+
+      if (event.key === 'Tab') {
+        const focusableElements = getLibraryFocusableElements();
+        if (!focusableElements.length) return;
+
+        const first = focusableElements[0];
+        const last = focusableElements[focusableElements.length - 1];
+        const activeElement = document.activeElement;
+        const panel = document.querySelector('[data-library-modal-panel]');
+
+        if (panel && activeElement instanceof HTMLElement && !panel.contains(activeElement)) {
+          event.preventDefault();
+          first.focus();
+          return;
+        }
+
+        if (panel && activeElement instanceof HTMLElement && panel.contains(activeElement) && !focusableElements.includes(activeElement)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus();
+          return;
+        }
+
+        // Keep keyboard focus constrained to modal controls while the dialog is active.
+        if (event.shiftKey && activeElement === first) {
+          event.preventDefault();
+          last.focus();
+          return;
+        }
+
+        if (!event.shiftKey && activeElement === last) {
+          event.preventDefault();
+          first.focus();
+          return;
+        }
+      }
+    }
+
     const activeElement = document.activeElement;
     const typing = isTypingTarget(activeElement);
 
@@ -421,12 +550,25 @@ async function start() {
   bindGlobalEvents();
 
   onRouteChange((route) => {
+    const enteringLibrary = isLibraryRoute(route) && !isLibraryRoute(uiState.route);
+    if (!isLibraryRoute(route)) {
+      modalState.lastNonLibraryRoute = route;
+    }
+
+    if (enteringLibrary) {
+      modalState.previouslyFocusedElement = document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+      modalState.previouslyFocusedSelector = getRestoreSelector(modalState.previouslyFocusedElement);
+    }
+
     uiState.route = route;
     store.emit();
   });
 
   store.subscribe((state) => {
     renderShell(state);
+    syncLibraryModalAccessibility(uiState.route);
   });
 
   uiState.route = getRoute();
