@@ -20,6 +20,7 @@ Use this checklist as the **single source of truth** for launch readiness meetin
 | E-006 | Browser matrix log | `qa/manual/browser-matrix/2026-02-17-mvp-matrix.md` | Chrome/Firefox/Safari run records.
 | E-007 | Launch QA runbook | `qa/manual/runbooks/mvp-launch-cross-browser-runbook.md` | Repeatable manual QA launch script covering Capture→Close and export/import validation.
 | E-008 | Cross-browser launch execution log | `qa/manual/browser-matrix/2026-02-17-mvp-launch-execution.md` | Executed against Chromium/Firefox/WebKit with per-area Pass/Fail and defect reproduction steps.
+| E-009 | Accessibility validation log | `qa/manual/accessibility/2026-02-17-focused-validation.md` | Keyboard walkthrough, modal focus-trap checks, accessible-name audit, and defect closure evidence. |
 
 ## Data safety
 
@@ -45,10 +46,10 @@ Use this checklist as the **single source of truth** for launch readiness meetin
 
 | Item | Pass criteria | Owner | Status | Latest verification | Evidence |
 | --- | --- | --- | --- | --- | --- |
-| Keyboard paths | Capture, Plan, Execute, Close primary actions are reachable by keyboard only (including shortcut navigation and Enter/Space activation). | Maya Johnson | Pass | 2026-02-17 | E-003 |
-| Modal focus management | Opening modal traps focus inside; Esc/close returns focus to invoking control; no keyboard focus loss. | Daniel Kim | Pass | 2026-02-17 | E-003 |
-| Labels and names | Form fields, icon-only buttons, and interactive controls have clear accessible names/labels announced by screen reader. | Daniel Kim | Blocked | 2026-02-17 | Pending NVDA rerun for icon-only archive button |
-| Focus visibility | All interactive controls have visible focus state in default theme. | Olivia Chen | Pass | 2026-02-17 | E-003 |
+| Keyboard paths | Capture, Plan, Execute, Close primary actions are reachable by keyboard only (including shortcut navigation and Enter/Space activation). | Maya Johnson | Pass | 2026-02-17 | E-009 |
+| Modal focus management | Opening modal traps focus inside; Esc/close returns focus to invoking control; no keyboard focus loss. | Daniel Kim | Pass | 2026-02-17 | E-009 |
+| Labels and names | Form fields, icon-only buttons, and interactive controls have clear accessible names/labels announced by screen reader. | Daniel Kim | Pass | 2026-02-17 | E-009 |
+| Focus visibility | All interactive controls have visible focus state in default theme. | Olivia Chen | Pass | 2026-02-17 | E-009 |
 
 ## Browser sanity matrix
 
