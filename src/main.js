@@ -366,6 +366,16 @@ function bindGlobalEvents() {
     const closeLibraryButton = event.target.closest('[data-close-library]');
     if (closeLibraryButton) {
       goTo('/capture');
+      return;
+    }
+
+    const followUpToggleButton = event.target.closest('[data-followup-group-id][data-followup-person-id]');
+    if (followUpToggleButton) {
+      // Library detail rows use explicit group/person data attributes for deterministic follow-up toggles.
+      const groupId = followUpToggleButton.dataset.followupGroupId;
+      const personId = followUpToggleButton.dataset.followupPersonId;
+      await store.toggleFollowUpRecipient(groupId, personId);
+      return;
     }
   });
 
