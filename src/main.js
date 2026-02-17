@@ -418,6 +418,20 @@ function bindGlobalEvents() {
     return target instanceof Element && Boolean(target.closest('[data-quick-capture]'));
   }
 
+  // Outside-dismiss helper also blurs the quick-capture control to prevent sticky focus
+  // from immediately restoring contextual UI in browsers that preserve input focus on whitespace clicks.
+  function dismissCaptureKeyFromOutsideInteraction(target) {
+    if (!uiState.captureKeyVisible) return;
+    if (isEventInsideQuickCapture(target)) return;
+
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement && activeElement.closest('[data-quick-capture]')) {
+      activeElement.blur();
+    }
+
+    hideCaptureKeyIfVisible();
+  }
+
   document.addEventListener('submit', async (event) => {
     const quickCapture = event.target.closest('[data-quick-capture]');
     const captureForm = event.target.closest('[data-capture-form]');
@@ -531,17 +545,21 @@ function bindGlobalEvents() {
   // Clicking any non-quick-capture surface should collapse the parser key immediately,
   // including non-focusable whitespace that does not trigger a focus transition.
   document.addEventListener('pointerdown', (event) => {
-    if (!uiState.captureKeyVisible) return;
-    if (isEventInsideQuickCapture(event.target)) return;
-    hideCaptureKeyIfVisible();
+    dismissCaptureKeyFromOutsideInteraction(event.target);
   }, true);
 
-  // Some environments dispatch click without pointer events in specific interaction paths;
-  // capture-phase click guarantees outside-click dismissal still executes.
+  // Fallback listeners cover environments where pointer events are partial/disabled.
+  document.addEventListener('mousedown', (event) => {
+    dismissCaptureKeyFromOutsideInteraction(event.target);
+  }, true);
+
+  document.addEventListener('touchstart', (event) => {
+    dismissCaptureKeyFromOutsideInteraction(event.target);
+  }, true);
+
+  // Capture-phase click provides final compatibility for interaction paths that skip down-events.
   document.addEventListener('click', (event) => {
-    if (!uiState.captureKeyVisible) return;
-    if (isEventInsideQuickCapture(event.target)) return;
-    hideCaptureKeyIfVisible();
+    dismissCaptureKeyFromOutsideInteraction(event.target);
   }, true);
 
   document.addEventListener('click', async (event) => {
