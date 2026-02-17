@@ -142,6 +142,27 @@ async function performStoreOperation(operationName, operation) {
   }
 }
 
+
+async function runDeleteConfirmationFlow(request) {
+  if (!request) return false;
+
+  // Step 1: explicit acknowledgement before any delete mutation is attempted.
+  const acknowledged = window.confirm(`Delete "${request.label}" from ${request.collection}? You can restore soft-deleted items from Library views.`);
+  if (!acknowledged) return false;
+
+  if (request.hard) {
+    // Step 2 (hard delete only): typed confirmation to prevent accidental permanent removal.
+    const typed = window.prompt('Hard delete is permanent. Type DELETE to confirm.');
+    if ((typed || '').trim().toUpperCase() !== 'DELETE') {
+      window.alert('Hard delete cancelled: confirmation phrase did not match DELETE.');
+      return false;
+    }
+    return performStoreOperation('Hard delete', () => store.confirmDelete(request, typed));
+  }
+
+  return performStoreOperation('Delete', () => store.confirmDelete(request));
+}
+
 function triggerSnapshotDownload(snapshot) {
   // Browser-native download flow: Blob + object URL + temporary anchor element.
   const exportedAtCompact = snapshot.exportedAt.replace(/[:.]/g, '-');
@@ -505,6 +526,35 @@ function bindGlobalEvents() {
         uiState.captureTab = 'unprocessed';
         goTo('/capture');
       }
+      return;
+    }
+
+
+    const restoreEntityButton = event.target.closest('[data-restore-entity]');
+    if (restoreEntityButton) {
+      await store.restoreEntity(restoreEntityButton.dataset.restoreEntity, restoreEntityButton.dataset.id);
+      return;
+    }
+
+    const archiveEntityButton = event.target.closest('[data-archive-entity]');
+    if (archiveEntityButton) {
+      await store.toggleArchiveEntity(archiveEntityButton.dataset.archiveEntity, archiveEntityButton.dataset.id);
+      return;
+    }
+
+    const requestDeleteButton = event.target.closest('[data-request-delete]');
+    if (requestDeleteButton) {
+      const collection = requestDeleteButton.dataset.requestDelete;
+      const id = requestDeleteButton.dataset.id;
+      const mode = requestDeleteButton.dataset.deleteMode || 'soft';
+      const scope = requestDeleteButton.dataset.deleteScope || 'row';
+      if (mode === 'hard' && scope !== 'detail') {
+        window.alert('Hard delete is available only from detail views.');
+        return;
+      }
+
+      const request = store.requestDelete(collection, id, { hard: mode === 'hard' });
+      await runDeleteConfirmationFlow(request);
       return;
     }
 

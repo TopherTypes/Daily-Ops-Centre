@@ -1,21 +1,26 @@
 import { escapeHtml } from '../utils/format.js';
 
+function isActiveForClose(item) {
+  // Close workflow excludes deleted items and treats archived Today rows as intentionally completed.
+  return !item?.deleted && !item?.archived;
+}
+
 function getCloseReadiness(state) {
-  const incompleteToday = state.today.filter((item) => (item.execution?.status || item.status || 'not started') !== 'complete');
+  const incompleteToday = state.today.filter((item) => isActiveForClose(item) && (item.execution?.status || item.status || 'not started') !== 'complete');
   const missingTodayNotes = incompleteToday.filter((item) => {
     const notes = item.execution?.notes || [];
     const lastNote = notes.length ? notes[notes.length - 1] : null;
     return !lastNote?.text?.trim();
   });
 
-  const unprocessedInbox = state.inbox.filter((item) => !item.archived && !item.processedAt);
+  const unprocessedInbox = state.inbox.filter((item) => !item.deleted && !item.archived && !item.processedAt);
   const snoozedInbox = unprocessedInbox.filter((item) => item.snoozed);
 
   return { incompleteToday, missingTodayNotes, unprocessedInbox, snoozedInbox };
 }
 
 function renderIncompleteItems(state, missingTodayNotes) {
-  const incomplete = state.today.filter((item) => (item.execution?.status || item.status || 'not started') !== 'complete');
+  const incomplete = state.today.filter((item) => isActiveForClose(item) && (item.execution?.status || item.status || 'not started') !== 'complete');
   if (!incomplete.length) {
     return '<p class="muted">All Today items are complete. You can generate and close safely.</p>';
   }
