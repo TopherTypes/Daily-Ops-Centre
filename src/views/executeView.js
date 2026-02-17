@@ -34,7 +34,7 @@ function renderGroup(name, rows) {
               <button type="button" class="inline-button" data-note-toggle="${item.id}">Add update note</button>
               ${item.noteOpen ? `
                 <form data-execute-note-form data-id="${item.id}" class="stack" style="margin-top:0.35rem;">
-                  <textarea class="textarea" rows="2" name="note" placeholder="Add short update note..." required></textarea>
+                  <textarea class="textarea" rows="2" name="note" aria-label="Update note" placeholder="Add short update note..." required></textarea>
                   <button
                     type="submit"
                     class="inline-button"

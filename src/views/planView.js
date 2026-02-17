@@ -50,18 +50,22 @@ export function renderPlan(state) {
   // Today rows also participate in list navigation for consistent Plan-mode keyboard movement.
   const todayItems = state.today.filter(isPlanVisible);
   const todaySuggestionIds = new Set(todayItems.map((item) => item.suggestionId || item.id));
-  const todayRows = todayItems.map((item) => `
+  const todayRows = todayItems.map((item) => {
+    // Arrow-only controls need explicit accessible names so SR users hear intent, not symbols.
+    const escapedTitle = escapeHtml(item.title || 'Today item');
+    return `
     <article class="row" tabindex="0" data-nav-row data-row-type="plan-today" data-today-id="${item.id}">
       <div class="row-main">
-        <strong>${escapeHtml(item.title)}</strong>
+        <strong>${escapedTitle}</strong>
         <div class="row-meta muted">${item.bucket.toUpperCase()} · ${item.type} · ${item.meta}</div>
       </div>
       <div class="inline-actions">
-        <button class="inline-button" data-move="up" data-id="${item.id}" type="button">↑</button>
-        <button class="inline-button" data-move="down" data-id="${item.id}" type="button">↓</button>
+        <button class="inline-button" data-move="up" data-id="${item.id}" type="button" aria-label="Move ${escapedTitle} up">↑</button>
+        <button class="inline-button" data-move="down" data-id="${item.id}" type="button" aria-label="Move ${escapedTitle} down">↓</button>
       </div>
     </article>
-  `).join('');
+  `;
+  }).join('');
 
   return `
     <section>

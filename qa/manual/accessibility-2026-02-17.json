@@ -1,0 +1,31 @@
+{
+  "keyboardWalkthrough": [
+    {
+      "name": "Capture primary actions (Enter + Space activation)",
+      "passed": true,
+      "details": "process_found=True"
+    },
+    {
+      "name": "Plan primary actions (shortcut + Enter/Space)",
+      "passed": true,
+      "details": "added=True, reordered=True"
+    },
+    {
+      "name": "Execute primary actions (shortcut + status/note keyboard flow)",
+      "passed": true,
+      "details": "note_opened=True, note_saved=True, status_set=True"
+    },
+    {
+      "name": "Close primary actions (shortcut + Enter activation)",
+      "passed": true,
+      "details": "validated=True"
+    }
+  ],
+  "modal": {
+    "focus_enters_on_open": true,
+    "tab_trapped": true,
+    "shift_tab_trapped": true,
+    "escape_returns_focus": true
+  },
+  "defects": []
+}

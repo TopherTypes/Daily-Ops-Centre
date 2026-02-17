@@ -26,16 +26,16 @@ function processingFields(item) {
         ].map(([value, label]) => `<button class="inline-button" data-process-target="${value}" data-id="${item.id}" type="button">${label}</button>`).join('')}
       </div>
       <div class="inline-fields">
-        <input class="input" name="people" data-process-field="people" placeholder="People (@name, @name2)" value="${escapeHtml(peopleValue)}" />
-        <input class="input" name="project" data-process-field="project" placeholder="Project (#name)" value="${escapeHtml(projectValue)}" />
-        <select class="select" name="context" data-process-field="context">
+        <input class="input" name="people" data-process-field="people" aria-label="People tokens" placeholder="People (@name, @name2)" value="${escapeHtml(peopleValue)}" />
+        <input class="input" name="project" data-process-field="project" aria-label="Project token" placeholder="Project (#name)" value="${escapeHtml(projectValue)}" />
+        <select class="select" name="context" data-process-field="context" aria-label="Context">
           <option value="" ${parsed.context ? '' : 'selected'}>context…</option>
           <option value="work" ${parsed.context === 'work' ? 'selected' : ''}>work</option>
           <option value="personal" ${parsed.context === 'personal' ? 'selected' : ''}>personal</option>
         </select>
-        <input class="input" name="dueDate" data-process-field="dueDate" placeholder="due:YYYY-MM-DD" value="${escapeHtml(parsed.dueDate)}" />
-        <input class="input" name="scheduleDate" data-process-field="scheduleDate" placeholder="do:YYYY-MM-DD" value="${escapeHtml(parsed.scheduleDate)}" />
-        <select class="select" name="priority" data-process-field="priority">
+        <input class="input" name="dueDate" data-process-field="dueDate" aria-label="Due date token" placeholder="due:YYYY-MM-DD" value="${escapeHtml(parsed.dueDate)}" />
+        <input class="input" name="scheduleDate" data-process-field="scheduleDate" aria-label="Schedule date token" placeholder="do:YYYY-MM-DD" value="${escapeHtml(parsed.scheduleDate)}" />
+        <select class="select" name="priority" data-process-field="priority" aria-label="Priority">
           <option value="" ${parsed.priority ? '' : 'selected'}>priority…</option>
           <option value="1" ${parsed.priority === 1 ? 'selected' : ''}>p1</option><option value="2" ${parsed.priority === 2 ? 'selected' : ''}>p2</option><option value="3" ${parsed.priority === 3 ? 'selected' : ''}>p3</option><option value="4" ${parsed.priority === 4 ? 'selected' : ''}>p4</option><option value="5" ${parsed.priority === 5 ? 'selected' : ''}>p5</option>
         </select>
@@ -60,7 +60,7 @@ export function renderCapture(state, uiState) {
         <p class="muted">Enter to capture, then process inline.</p>
       </div>
       <form data-capture-form class="inline-fields" aria-label="Capture item form">
-        <input class="input" name="captureInput" required placeholder="Capture anything quickly…" />
+        <input class="input" name="captureInput" aria-label="Capture input" required placeholder="Capture anything quickly…" />
         <button class="button" type="submit">Capture</button>
       </form>
       <div class="tabs" style="margin:0.5rem 0;">
