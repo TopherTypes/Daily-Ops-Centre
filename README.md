@@ -12,7 +12,18 @@ Built for GitHub Pages (no backend). Data is stored locally and can be exported/
 - **Daily plan resets:** every day starts blank, but the database persists.
 - **Trustworthy resurfacing:** commitments reappear at the right time (deadlines, scheduled items, meetings, reminders, pending updates).
 - **End-of-day integrity:** Close forces updates on anything unfinished so nothing silently rots.
-- **Default to archive:** delete exists, but is intentionally hard.
+- **Default to archive:** archive is reversible and preferred; delete requires explicit confirmation.
+
+
+## Archive vs delete policy
+
+- **Archive** is the default lifecycle action for inbox and library entities. Archived rows are hidden from active planning/close flows but remain recoverable from Library.
+- **Delete (soft delete)** marks an entity with `deleted = true` and `deletedAt` metadata. Soft-deleted rows are excluded from Capture/Plan/Execute/Close workflows and can be restored from **Library → Deleted**.
+- **Hard delete** permanently removes an entity record and is intentionally harder:
+  1. request delete,
+  2. explicit confirm dialog,
+  3. typed `DELETE` confirmation.
+- Hard delete controls are only exposed in Library detail contexts (not quick list-row actions).
 
 ## Modes
 

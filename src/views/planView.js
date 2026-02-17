@@ -1,5 +1,10 @@
 import { escapeHtml } from '../utils/format.js';
 
+function isPlanVisible(item) {
+  // Plan mode only works with active entities; archived/deleted remain recoverable in Library.
+  return !item?.deleted && !item?.archived;
+}
+
 // Suggestion rows are keyboard-focusable so M/S/K and arrow navigation can operate without a mouse.
 function renderSuggestionColumn(name, items, todaySuggestionIds) {
   return `
@@ -42,8 +47,9 @@ function renderSuggestionColumn(name, items, todaySuggestionIds) {
 
 export function renderPlan(state) {
   // Today rows also participate in list navigation for consistent Plan-mode keyboard movement.
-  const todaySuggestionIds = new Set(state.today.map((item) => item.suggestionId || item.id));
-  const todayRows = state.today.map((item) => `
+  const todayItems = state.today.filter(isPlanVisible);
+  const todaySuggestionIds = new Set(todayItems.map((item) => item.suggestionId || item.id));
+  const todayRows = todayItems.map((item) => `
     <article class="row" tabindex="0" data-nav-row data-row-type="plan-today" data-today-id="${item.id}">
       <div class="row-main">
         <strong>${escapeHtml(item.title)}</strong>
@@ -69,9 +75,9 @@ export function renderPlan(state) {
         </div>
       </section>
       <div class="cols">
-        ${renderSuggestionColumn('Must', state.suggestions.must, todaySuggestionIds)}
-        ${renderSuggestionColumn('Should', state.suggestions.should, todaySuggestionIds)}
-        ${renderSuggestionColumn('Could', state.suggestions.could, todaySuggestionIds)}
+        ${renderSuggestionColumn('Must', state.suggestions.must.filter(isPlanVisible), todaySuggestionIds)}
+        ${renderSuggestionColumn('Should', state.suggestions.should.filter(isPlanVisible), todaySuggestionIds)}
+        ${renderSuggestionColumn('Could', state.suggestions.could.filter(isPlanVisible), todaySuggestionIds)}
       </div>
     </section>
   `;

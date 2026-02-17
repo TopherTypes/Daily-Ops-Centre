@@ -1,105 +1,81 @@
 import { escapeHtml, titleCase } from '../utils/format.js';
 
-const LIBRARY_SECTIONS = ['tasks', 'projects', 'people', 'meetings', 'reminders', 'habits', 'logs'];
+const LIBRARY_SECTIONS = ['tasks', 'projects', 'people', 'meetings', 'reminders', 'habits', 'logs', 'archived', 'deleted'];
+const ENTITY_COLLECTIONS = ['tasks', 'projects', 'people', 'meetings', 'reminders', 'notes', 'followUps'];
+
+function isDeleted(item) {
+  return Boolean(item?.deleted);
+}
+
+function isArchived(item) {
+  return Boolean(item?.archived);
+}
+
+function activeCollection(state, key) {
+  return (state[key] || []).filter((item) => !isDeleted(item) && !isArchived(item));
+}
 
 function personPendingUpdates(state, personId) {
   return state.followUps
-    .filter((group) => group.recipients.some((recipient) => recipient.personId === personId && recipient.status === 'pending'))
+    .filter((group) => !isDeleted(group) && group.recipients.some((recipient) => recipient.personId === personId && recipient.status === 'pending'))
     .map((group) => group.title);
 }
 
-/**
- * Renders compact task rows for the current wireframe data set.
- */
-function renderTasks(state) {
+function renderDetailLifecycleActions(collection, item) {
   return `
-    <div>
-      <div class="filters" style="margin-bottom:0.4rem;">
-        <input class="input" placeholder="Filter by text" />
-        <select class="select"><option>Status</option></select>
-        <select class="select"><option>Project</option></select>
-      </div>
-      <div class="row-list">
-        ${state.tasks.map((task) => `<article class="row"><div><strong>${escapeHtml(task.title)}</strong><div class="muted">${task.status} · due ${task.due}</div></div></article>`).join('')}
-      </div>
+    <div class="inline-actions" style="margin-top:0.4rem;">
+      <button class="inline-button" type="button" data-archive-entity="${collection}" data-id="${item.id}">${isArchived(item) ? 'Unarchive' : 'Archive'}</button>
+      <button class="inline-button" type="button" data-request-delete="${collection}" data-id="${item.id}" data-delete-mode="soft">Request delete</button>
+      <button class="inline-button" type="button" data-request-delete="${collection}" data-id="${item.id}" data-delete-mode="hard" data-delete-scope="detail">Hard delete</button>
     </div>
   `;
 }
 
-/**
- * Projects render with owned task counts so the list is immediately useful,
- * even for lightly-populated demo data.
- */
-function renderProjects(state) {
-  if (!state.projects.length) {
-    return '<p class="muted">No projects yet. Process inbox items as projects to build this list.</p>';
-  }
+function renderSimpleListWithDetail(state, collection, selectedId, titleField = 'title', subtitleBuilder = () => '') {
+  const rows = activeCollection(state, collection);
+  const selected = rows.find((entry) => entry.id === selectedId) || rows[0];
 
   return `
-    <div class="row-list">
-      ${state.projects.map((project) => {
-        const taskCount = state.tasks.filter((task) => (task.linkedProjects || []).includes(project.id)).length;
-        return `
-          <article class="row">
-            <div>
-              <strong>${escapeHtml(project.name)}</strong>
-              <div class="muted">Status: ${escapeHtml(project.status || 'active')} · Linked tasks: ${taskCount}</div>
-            </div>
-          </article>
-        `;
-      }).join('')}
+    <div class="cols">
+      <section class="col">
+        <h3>${titleCase(collection)}</h3>
+        <div class="row-list" style="margin-top:0.35rem;">
+          ${rows.map((entry) => `<a class="mode-link ${selected?.id === entry.id ? 'active' : ''}" href="#/library/${collection}/${entry.id}">${escapeHtml(entry[titleField] || entry.name || entry.id)}</a>`).join('') || '<p class="muted">No active items.</p>'}
+        </div>
+      </section>
+      <section class="col">
+        <h3>${titleCase(collection.slice(0, -1))} detail</h3>
+        ${selected ? `
+          <p><strong>${escapeHtml(selected[titleField] || selected.name || selected.id)}</strong></p>
+          <p class="muted">${escapeHtml(subtitleBuilder(selected) || 'No additional metadata')}</p>
+          ${renderDetailLifecycleActions(collection, selected)}
+        ` : '<p class="muted">No item selected.</p>'}
+      </section>
     </div>
   `;
 }
 
 function renderPeople(state, selectedId) {
-  const selected = state.people.find((p) => p.id === selectedId) || state.people[0];
+  const people = activeCollection(state, 'people');
+  const selected = people.find((p) => p.id === selectedId) || people[0];
   const pending = selected ? personPendingUpdates(state, selected.id) : [];
-  const selectedGroups = selected
-    ? state.followUps.filter((group) => group.recipients.some((recipient) => recipient.personId === selected.id))
-    : [];
 
   return `
     <div class="cols">
       <section class="col">
         <h3>People</h3>
         <div class="row-list" style="margin-top:0.35rem;">
-          ${state.people.map((person) => `<a class="mode-link ${selected?.id === person.id ? 'active' : ''}" href="#/library/people/${person.id}">${escapeHtml(person.name)}</a>`).join('')}
+          ${people.map((person) => `<a class="mode-link ${selected?.id === person.id ? 'active' : ''}" href="#/library/people/${person.id}">${escapeHtml(person.name)}</a>`).join('')}
         </div>
       </section>
       <section class="col">
         <h3>Person detail</h3>
         ${selected ? `
           <p><strong>${escapeHtml(selected.name)}</strong></p>
-          <p class="muted">${escapeHtml(selected.email)} · ${escapeHtml(selected.phone)}</p>
+          <p class="muted">${escapeHtml(selected.email || '')} · ${escapeHtml(selected.phone || '')}</p>
           <h4>Pending updates</h4>
-          <div class="row-list">
-            ${pending.map((entry) => `<article class="row">${escapeHtml(entry)}</article>`).join('') || '<p class="muted">No pending updates.</p>'}
-          </div>
-          <h4>Follow-up tracking</h4>
-          <div class="row-list">
-            ${selectedGroups.map((group) => {
-              const recipient = group.recipients.find((item) => item.personId === selected.id);
-              const isComplete = recipient?.status === 'complete';
-              return `
-                <article class="row">
-                  <div>
-                    <strong>${escapeHtml(group.title)}</strong>
-                    <div class="muted">Status: ${escapeHtml(recipient?.status || 'pending')}</div>
-                  </div>
-                  <button
-                    class="inline-button"
-                    type="button"
-                    data-followup-group-id="${group.id}"
-                    data-followup-person-id="${selected.id}"
-                    aria-pressed="${isComplete ? 'true' : 'false'}"
-                  >
-                    ${isComplete ? 'Mark pending' : 'Mark complete'}
-                  </button>
-                </article>
-              `;
-            }).join('') || '<p class="muted">No follow-ups assigned to this person.</p>'}
-          </div>
+          <div class="row-list">${pending.map((entry) => `<article class="row">${escapeHtml(entry)}</article>`).join('') || '<p class="muted">No pending updates.</p>'}</div>
+          ${renderDetailLifecycleActions('people', selected)}
         ` : '<p class="muted">No person selected.</p>'}
       </section>
     </div>
@@ -107,108 +83,72 @@ function renderPeople(state, selectedId) {
 }
 
 function renderMeetings(state, selectedId) {
-  const selected = state.meetings.find((m) => m.id === selectedId) || state.meetings[0];
-  const groups = state.followUps.filter((group) => group.meetingId === selected?.id);
+  const meetings = activeCollection(state, 'meetings');
+  const selected = meetings.find((m) => m.id === selectedId) || meetings[0];
+  const groups = state.followUps.filter((group) => !isDeleted(group) && group.meetingId === selected?.id);
 
   return `
     <div class="cols">
       <section class="col">
         <h3>Meetings</h3>
         <div class="row-list" style="margin-top:0.35rem;">
-          ${state.meetings.map((meeting) => `<a class="mode-link ${selected?.id === meeting.id ? 'active' : ''}" href="#/library/meetings/${meeting.id}">${escapeHtml(meeting.time)} · ${escapeHtml(meeting.title)}</a>`).join('')}
+          ${meetings.map((meeting) => `<a class="mode-link ${selected?.id === meeting.id ? 'active' : ''}" href="#/library/meetings/${meeting.id}">${escapeHtml(meeting.time || '')} · ${escapeHtml(meeting.title)}</a>`).join('')}
         </div>
       </section>
       <section class="col">
         <h3>Meeting detail</h3>
         ${selected ? `
-          <p><strong>${escapeHtml(selected.title)}</strong> <span class="muted">(${selected.meetingType})</span></p>
-          <p class="muted">Agenda: ${escapeHtml(selected.agenda)}</p>
-          <p class="muted">Notes: ${escapeHtml(selected.notes)}</p>
-          <h4>Follow-ups</h4>
-          <div class="row-list">
-            ${groups.map((group) => `<article class="row"><div><strong>${escapeHtml(group.title)}</strong><div class="row-meta muted">${group.recipients.map((recipient) => {
-              const person = state.people.find((p) => p.id === recipient.personId);
-              const isComplete = recipient.status === 'complete';
-              return `
-                <button
-                  class="inline-button"
-                  type="button"
-                  data-followup-group-id="${group.id}"
-                  data-followup-person-id="${recipient.personId}"
-                  aria-pressed="${isComplete ? 'true' : 'false'}"
-                >
-                  ${escapeHtml(person?.name ?? recipient.personId)}: ${escapeHtml(recipient.status)}
-                </button>
-              `;
-            }).join('')}</div></div></article>`).join('') || '<p class="muted">No follow-ups created yet.</p>'}
-          </div>
+          <p><strong>${escapeHtml(selected.title)}</strong> <span class="muted">(${escapeHtml(selected.meetingType || 'group')})</span></p>
+          <p class="muted">Agenda: ${escapeHtml(selected.agenda || '')}</p>
+          <div class="row-list">${groups.map((group) => `<article class="row"><strong>${escapeHtml(group.title)}</strong></article>`).join('') || '<p class="muted">No follow-ups.</p>'}</div>
+          ${renderDetailLifecycleActions('meetings', selected)}
         ` : '<p class="muted">No meeting selected.</p>'}
       </section>
     </div>
   `;
 }
 
-function renderReminders(state) {
-  if (!state.reminders.length) {
-    return '<p class="muted">No reminders yet. Capture one with type:reminder to populate this section.</p>';
-  }
+function renderArchivedOrDeleted(state, mode = 'archived') {
+  const predicate = mode === 'deleted'
+    ? (item) => isDeleted(item)
+    : (item) => isArchived(item) && !isDeleted(item);
 
-  return `
-    <div class="row-list">
-      ${state.reminders.map((reminder) => `
-        <article class="row">
-          <div>
-            <strong>${escapeHtml(reminder.title)}</strong>
-            <div class="muted">Status: ${escapeHtml(reminder.status || 'pending')} · Due: ${escapeHtml(reminder.due || 'unscheduled')}</div>
-          </div>
-        </article>
-      `).join('')}
-    </div>
-  `;
+  const blocks = ENTITY_COLLECTIONS.map((collection) => {
+    const rows = (state[collection] || []).filter(predicate);
+    if (!rows.length) return '';
+
+    return `
+      <article class="col">
+        <h3>${titleCase(collection)}</h3>
+        <div class="row-list" style="margin-top:0.35rem;">
+          ${rows.map((item) => `
+            <article class="row">
+              <div>
+                <strong>${escapeHtml(item.title || item.name || item.id)}</strong>
+                <div class="muted">${mode === 'deleted' ? `Deleted at: ${escapeHtml(item.deletedAt || 'unknown')}` : 'Archived and recoverable'}</div>
+              </div>
+              <div class="inline-actions">
+                <button class="inline-button" type="button" data-restore-entity="${collection}" data-id="${item.id}">Restore</button>
+              </div>
+            </article>
+          `).join('')}
+        </div>
+      </article>
+    `;
+  }).join('');
+
+  return blocks || `<p class="muted">No recently ${mode} items.</p>`;
 }
 
-/**
- * Habits are not yet first-class entities in state, but the Library should
- * still show a truthful, functional section instead of placeholder copy.
- */
 function renderHabits(state) {
   const habits = Array.isArray(state.habits) ? state.habits : [];
-  if (!habits.length) {
-    return '<p class="muted">No habits tracked yet. Habit support can be added without changing this navigation flow.</p>';
-  }
-
-  return `
-    <div class="row-list">
-      ${habits.map((habit) => `
-        <article class="row">
-          <div>
-            <strong>${escapeHtml(habit.title || habit.name || 'Untitled habit')}</strong>
-            <div class="muted">Cadence: ${escapeHtml(habit.cadence || 'not set')} · Status: ${escapeHtml(habit.status || 'active')}</div>
-          </div>
-        </article>
-      `).join('')}
-    </div>
-  `;
+  if (!habits.length) return '<p class="muted">No habits tracked yet.</p>';
+  return `<div class="row-list">${habits.map((habit) => `<article class="row"><strong>${escapeHtml(habit.title || habit.name || 'Untitled habit')}</strong></article>`).join('')}</div>`;
 }
 
 function renderLogs(state) {
-  if (!state.dailyLogs?.length) {
-    return '<p class="muted">No Daily Logs yet. Run Close mode to generate closure history.</p>';
-  }
-
-  return `
-    <div class="row-list">
-      ${state.dailyLogs.map((log) => `
-        <article class="row">
-          <div>
-            <strong>${escapeHtml(log.createdAt)}</strong>
-            <div class="muted">Planned: ${log.plannedCount} · Completed: ${log.completed.length} · Incomplete: ${log.incomplete.length}</div>
-            <div class="muted">Incomplete updates: ${log.incomplete.map((item) => `${escapeHtml(item.title)} (${escapeHtml(item.lastUpdate?.text || 'No update')})`).join(' · ') || 'none'}</div>
-          </div>
-        </article>
-      `).join('')}
-    </div>
-  `;
+  if (!state.dailyLogs?.length) return '<p class="muted">No Daily Logs yet.</p>';
+  return `<div class="row-list">${state.dailyLogs.map((log) => `<article class="row"><strong>${escapeHtml(log.createdAt || log.generatedAt || '')}</strong></article>`).join('')}</div>`;
 }
 
 export function renderLibrary(state, routeParts) {
@@ -216,13 +156,15 @@ export function renderLibrary(state, routeParts) {
   const selectedId = routeParts[3];
 
   let body = '<p class="muted">Select a library section.</p>';
-  if (section === 'tasks') body = renderTasks(state);
-  if (section === 'projects') body = renderProjects(state);
+  if (section === 'tasks') body = renderSimpleListWithDetail(state, 'tasks', selectedId, 'title', (item) => `${item.status || 'backlog'} · due ${item.due || 'unscheduled'}`);
+  if (section === 'projects') body = renderSimpleListWithDetail(state, 'projects', selectedId, 'name', (item) => `status: ${item.status || 'active'}`);
   if (section === 'people') body = renderPeople(state, selectedId);
   if (section === 'meetings') body = renderMeetings(state, selectedId);
-  if (section === 'reminders') body = renderReminders(state);
+  if (section === 'reminders') body = renderSimpleListWithDetail(state, 'reminders', selectedId, 'title', (item) => `${item.status || 'pending'} · due ${item.due || 'unscheduled'}`);
   if (section === 'habits') body = renderHabits(state);
   if (section === 'logs') body = renderLogs(state);
+  if (section === 'archived') body = renderArchivedOrDeleted(state, 'archived');
+  if (section === 'deleted') body = renderArchivedOrDeleted(state, 'deleted');
 
   return `
     <div class="library-grid">

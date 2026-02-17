@@ -70,10 +70,11 @@ function renderGroup(name, rows) {
 
 export function renderExecute(state, uiState) {
   const noteId = uiState.executeNoteItemId;
-  const tasks = state.today.filter((item) => item.type === 'task').map((item) => ({ ...item, noteOpen: noteId === item.id }));
-  const meetings = state.today.filter((item) => item.type === 'meeting').map((item) => ({ ...item, noteOpen: noteId === item.id }));
-  const reminders = state.today.filter((item) => item.type === 'reminder').map((item) => ({ ...item, noteOpen: noteId === item.id }));
-  const updates = state.today.filter((item) => item.type === 'follow-up').map((item) => ({ ...item, noteOpen: noteId === item.id }));
+  const activeToday = state.today.filter((item) => !item.deleted);
+  const tasks = activeToday.filter((item) => item.type === 'task').map((item) => ({ ...item, noteOpen: noteId === item.id }));
+  const meetings = activeToday.filter((item) => item.type === 'meeting').map((item) => ({ ...item, noteOpen: noteId === item.id }));
+  const reminders = activeToday.filter((item) => item.type === 'reminder').map((item) => ({ ...item, noteOpen: noteId === item.id }));
+  const updates = activeToday.filter((item) => item.type === 'follow-up').map((item) => ({ ...item, noteOpen: noteId === item.id }));
 
   return `
     <section>

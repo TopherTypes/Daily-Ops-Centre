@@ -6,15 +6,15 @@ const STATE_SCHEMA_VERSION = 3;
 const STAMPED_FIELD_CONTAINER_KEY = '_fields';
 
 const MUTABLE_FIELDS_BY_COLLECTION = {
-  inbox: ['raw', 'type', 'archived', 'processedType', 'processedAt', 'snoozed'],
-  today: ['title', 'status', 'bucket', 'execution', 'due', 'scheduled', 'priority', 'context'],
-  tasks: ['title', 'status', 'due', 'scheduled', 'priority', 'context'],
-  meetings: ['title', 'time', 'meetingType', 'agenda', 'notes', 'due', 'scheduled', 'priority', 'context'],
-  reminders: ['title', 'status', 'due', 'scheduled', 'priority', 'context'],
-  notes: ['title', 'body', 'context', 'priority'],
-  followUps: ['title', 'details', 'recipients', 'status', 'context', 'priority'],
-  people: ['name', 'email', 'phone'],
-  projects: ['name', 'status'],
+  inbox: ['raw', 'type', 'archived', 'deleted', 'deletedAt', 'processedType', 'processedAt', 'snoozed'],
+  today: ['title', 'status', 'bucket', 'execution', 'archived', 'deleted', 'deletedAt', 'due', 'scheduled', 'priority', 'context'],
+  tasks: ['title', 'status', 'archived', 'deleted', 'deletedAt', 'due', 'scheduled', 'priority', 'context'],
+  meetings: ['title', 'time', 'meetingType', 'agenda', 'notes', 'archived', 'deleted', 'deletedAt', 'due', 'scheduled', 'priority', 'context'],
+  reminders: ['title', 'status', 'archived', 'deleted', 'deletedAt', 'due', 'scheduled', 'priority', 'context'],
+  notes: ['title', 'body', 'archived', 'deleted', 'deletedAt', 'context', 'priority'],
+  followUps: ['title', 'details', 'recipients', 'status', 'archived', 'deleted', 'deletedAt', 'context', 'priority'],
+  people: ['name', 'email', 'phone', 'archived', 'deleted', 'deletedAt'],
+  projects: ['name', 'status', 'archived', 'deleted', 'deletedAt'],
   suggestions: ['title', 'meta', 'type'],
   dailyLogs: []
 };
@@ -178,6 +178,27 @@ function stampEntityMutableFields(record, keys, deviceId, updatedAt = new Date()
   return record;
 }
 
+/**
+ * Ensures all persisted entities expose lifecycle flags consistently.
+ */
+function normalizeEntityLifecycle(entry, defaults = {}) {
+  return {
+    archived: false,
+    deleted: false,
+    deletedAt: '',
+    ...defaults,
+    ...entry
+  };
+}
+
+function isDeletedEntity(entry) {
+  return Boolean(getStampedValue(entry, 'deleted', entry?.deleted || false));
+}
+
+function isArchivedEntity(entry) {
+  return Boolean(getStampedValue(entry, 'archived', entry?.archived || false));
+}
+
 
 function createTodayExecutionState(status = 'not started') {
   return {
@@ -339,8 +360,20 @@ function applyStateGuards(state) {
     }
   }
 
-  guarded.inbox = guarded.inbox.map((entry) => ({ archived: false, snoozed: false, ...entry }));
-  guarded.today = guarded.today.map((entry) => normalizeTodayExecution(entry || {}));
+  // Apply lifecycle defaults consistently so archive/delete behavior is deterministic across entities.
+  guarded.inbox = guarded.inbox.map((entry) => normalizeEntityLifecycle(entry, { snoozed: false }));
+  guarded.today = guarded.today.map((entry) => normalizeTodayExecution(normalizeEntityLifecycle(entry || {})));
+  guarded.tasks = guarded.tasks.map((entry) => normalizeEntityLifecycle(entry));
+  guarded.meetings = guarded.meetings.map((entry) => normalizeEntityLifecycle(entry));
+  guarded.people = guarded.people.map((entry) => normalizeEntityLifecycle(entry));
+  guarded.projects = guarded.projects.map((entry) => normalizeEntityLifecycle(entry));
+  guarded.followUps = guarded.followUps.map((entry) => normalizeEntityLifecycle(entry));
+  guarded.reminders = guarded.reminders.map((entry) => normalizeEntityLifecycle(entry));
+  guarded.notes = guarded.notes.map((entry) => normalizeEntityLifecycle(entry));
+
+  for (const bucket of ['must', 'should', 'could']) {
+    guarded.suggestions[bucket] = guarded.suggestions[bucket].map((entry) => normalizeEntityLifecycle(entry));
+  }
 
   if (typeof guarded.lastActiveDate !== 'string') {
     guarded.lastActiveDate = toLocalIsoDate(new Date());
@@ -853,6 +886,8 @@ export class AppStore {
       raw,
       type: 'unknown',
       archived: false,
+      deleted: false,
+      deletedAt: '',
       snoozed: false
     };
     stampEntityMutableFields(item, MUTABLE_FIELDS_BY_COLLECTION.inbox, deviceId, now);
@@ -862,7 +897,7 @@ export class AppStore {
   }
 
   async toggleArchiveInbox(id) {
-    const item = this.state.inbox.find((entry) => entry.id === id);
+    const item = this.state.inbox.find((entry) => entry.id === id && !isDeletedEntity(entry));
     if (!item) return;
 
     const nextArchived = !getStampedValue(item, 'archived', item.archived);
@@ -872,12 +907,104 @@ export class AppStore {
   }
 
   async toggleSnoozeInbox(id) {
-    const item = this.state.inbox.find((entry) => entry.id === id);
+    const item = this.state.inbox.find((entry) => entry.id === id && !isDeletedEntity(entry));
     if (!item) return;
 
     // Snooze is a lightweight inbox state used to intentionally postpone processing.
     const nextSnoozed = !getStampedValue(item, 'snoozed', item.snoozed || false);
     updateStampedField(item, 'snoozed', nextSnoozed, getDeviceId());
+    await this.persist();
+    this.emit();
+  }
+
+
+  /**
+   * Creates a structured delete request so the UI can run a two-step confirmation flow.
+   */
+  requestDelete(collection, id, options = {}) {
+    const allowedCollections = ['inbox', 'tasks', 'projects', 'people', 'meetings', 'reminders', 'notes', 'followUps', 'today'];
+    if (!allowedCollections.includes(collection)) return null;
+
+    const entity = this.state[collection]?.find((entry) => entry.id === id);
+    if (!entity) return null;
+
+    return {
+      collection,
+      id,
+      hard: Boolean(options.hard),
+      label: entity.title || entity.name || entity.raw || entity.id,
+      typedPhrase: options.hard ? 'DELETE' : ''
+    };
+  }
+
+  /**
+   * Applies a confirmed delete request. Soft delete sets tombstone flags; hard delete removes the row.
+   */
+  async confirmDelete(request, typedPhrase = '') {
+    if (!request?.collection || !request?.id) return false;
+
+    const collection = this.state[request.collection];
+    if (!Array.isArray(collection)) return false;
+
+    const index = collection.findIndex((entry) => entry.id === request.id);
+    if (index === -1) return false;
+
+    if (request.hard) {
+      if ((typedPhrase || '').trim().toUpperCase() !== 'DELETE') {
+        throw new Error('Hard delete requires typing DELETE.');
+      }
+      collection.splice(index, 1);
+    } else {
+      const target = collection[index];
+      const now = new Date().toISOString();
+      const deviceId = getDeviceId();
+      // Soft-delete is recoverable and keeps history fields intact.
+      updateStampedField(target, 'deleted', true, deviceId, now);
+      updateStampedField(target, 'deletedAt', now, deviceId, now);
+      if ('archived' in target || request.collection === 'inbox') {
+        updateStampedField(target, 'archived', true, deviceId, now);
+      }
+      if (request.collection === 'inbox') {
+        updateStampedField(target, 'snoozed', false, deviceId, now);
+      }
+    }
+
+    await this.persist();
+    this.emit();
+    return true;
+  }
+
+  /**
+   * Restores an entity from archive/deleted lifecycle states.
+   */
+  async restoreEntity(collection, id) {
+    const target = this.state[collection]?.find((entry) => entry.id === id);
+    if (!target) return;
+
+    const now = new Date().toISOString();
+    const deviceId = getDeviceId();
+    updateStampedField(target, 'deleted', false, deviceId, now);
+    updateStampedField(target, 'deletedAt', '', deviceId, now);
+    if ('archived' in target) {
+      updateStampedField(target, 'archived', false, deviceId, now);
+    }
+
+    await this.persist();
+    this.emit();
+  }
+
+
+  /**
+   * Toggles archive state for library entities while preserving tombstone metadata.
+   */
+  async toggleArchiveEntity(collection, id) {
+    const target = this.state[collection]?.find((entry) => entry.id === id);
+    if (!target) return;
+
+    const now = new Date().toISOString();
+    const nextArchived = !isArchivedEntity(target);
+    updateStampedField(target, 'archived', nextArchived, getDeviceId(), now);
+
     await this.persist();
     this.emit();
   }
@@ -914,7 +1041,10 @@ export class AppStore {
     const created = {
       id: `p_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       name,
-      source: provenance
+      source: provenance,
+      archived: false,
+      deleted: false,
+      deletedAt: ''
     };
     stampEntityMutableFields(created, MUTABLE_FIELDS_BY_COLLECTION.people, getDeviceId());
     this.state.people.push(created);
@@ -929,7 +1059,10 @@ export class AppStore {
     const created = {
       id: `pr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       name,
-      source: provenance
+      source: provenance,
+      archived: false,
+      deleted: false,
+      deletedAt: ''
     };
     stampEntityMutableFields(created, MUTABLE_FIELDS_BY_COLLECTION.projects, getDeviceId());
     this.state.projects.push(created);
@@ -946,7 +1079,7 @@ export class AppStore {
     this.ensureCollections();
     const previousState = structuredClone(this.state);
 
-    const inboxItem = this.state.inbox.find((entry) => entry.id === inboxId);
+    const inboxItem = this.state.inbox.find((entry) => entry.id === inboxId && !isDeletedEntity(entry));
     if (!inboxItem) return;
 
     const inboxRaw = getStampedValue(inboxItem, 'raw', inboxItem.raw) || '';
@@ -987,7 +1120,10 @@ export class AppStore {
       scheduled: fields.scheduleDate || parsed.scheduleDate || '',
       source: provenance,
       linkedPeople: personEntities.map((person) => person.id),
-      linkedProjects: projectEntity ? [projectEntity.id] : []
+      linkedProjects: projectEntity ? [projectEntity.id] : [],
+      archived: false,
+      deleted: false,
+      deletedAt: ''
     };
 
     // Keep conversion logic explicit per entity type so contributors can safely extend it.
@@ -1044,11 +1180,11 @@ export class AppStore {
 
   async addToToday(bucket, suggestionId) {
     const pool = [...this.state.suggestions.must, ...this.state.suggestions.should, ...this.state.suggestions.could];
-    const suggestion = pool.find((entry) => entry.id === suggestionId);
+    const suggestion = pool.find((entry) => entry.id === suggestionId && !isDeletedEntity(entry) && !isArchivedEntity(entry));
     if (!suggestion) return;
 
     // Prevent duplicate Today entries for the same suggestion while preserving existing order.
-    const alreadyPresent = this.state.today.some((entry) => (entry.suggestionId || entry.id) === suggestionId);
+    const alreadyPresent = this.state.today.some((entry) => !isDeletedEntity(entry) && (entry.suggestionId || entry.id) === suggestionId);
     if (alreadyPresent) return;
 
     const now = new Date().toISOString();
@@ -1058,7 +1194,10 @@ export class AppStore {
       suggestionId,
       bucket,
       execution: createTodayExecutionState('not started'),
-      status: 'not started'
+      status: 'not started',
+      archived: false,
+      deleted: false,
+      deletedAt: ''
     };
     stampEntityMutableFields(item, MUTABLE_FIELDS_BY_COLLECTION.today, getDeviceId(), now);
 
@@ -1069,7 +1208,7 @@ export class AppStore {
 
   async reorderToday(id, direction) {
     // Moving an item swaps adjacent rows only; no re-sort means unchanged rows keep their relative order.
-    const index = this.state.today.findIndex((entry) => entry.id === id);
+    const index = this.state.today.findIndex((entry) => entry.id === id && !isDeletedEntity(entry));
     if (index === -1) return;
     const target = direction === 'up' ? index - 1 : index + 1;
     if (target < 0 || target >= this.state.today.length) return;
@@ -1096,6 +1235,9 @@ export class AppStore {
 
     if (!sourceBucket || sourceBucket === nextBucket) return;
 
+    const sourceEntry = this.state.suggestions[sourceBucket][sourceIndex];
+    if (!sourceEntry || isDeletedEntity(sourceEntry)) return;
+
     const [entry] = this.state.suggestions[sourceBucket].splice(sourceIndex, 1);
     this.state.suggestions[nextBucket].unshift(entry);
     await this.persist();
@@ -1107,7 +1249,7 @@ export class AppStore {
     const allowedStatuses = ['not started', 'in progress', 'waiting', 'blocked', 'complete', 'cancelled', 'deferred', 'archived'];
     if (!allowedStatuses.includes(status)) return;
 
-    const index = this.state.today.findIndex((entry) => entry.id === id);
+    const index = this.state.today.findIndex((entry) => entry.id === id && !isDeletedEntity(entry));
     if (index === -1) return;
 
     // Side effect: keep legacy `status` while treating `execution.status` as source of truth for MVP persistence.
@@ -1116,6 +1258,7 @@ export class AppStore {
     next.execution.updatedAt = new Date().toISOString();
     updateStampedField(next, 'execution', next.execution, getDeviceId(), next.execution.updatedAt);
     updateStampedField(next, 'status', status, getDeviceId(), next.execution.updatedAt);
+    updateStampedField(next, 'archived', status === 'archived', getDeviceId(), next.execution.updatedAt);
     this.state.today[index] = next;
 
     // Persistence expectation: save status changes immediately so execute progress survives refreshes.
@@ -1138,7 +1281,7 @@ export class AppStore {
     const note = (noteText || '').trim();
     if (!note) return;
 
-    const index = this.state.today.findIndex((entry) => entry.id === id);
+    const index = this.state.today.findIndex((entry) => entry.id === id && !isDeletedEntity(entry));
     if (index === -1) return;
 
     // Note side effect: append immutable timestamped updates directly onto the Today item execution state.
@@ -1159,7 +1302,10 @@ export class AppStore {
   getIncompleteTodayItems() {
     // Close-mode guard: an item is incomplete unless it is explicitly marked `complete`.
     // We intentionally treat deferred/blocked/waiting/cancelled as incomplete so closure history captures unfinished intent.
-    return this.state.today.map(normalizeTodayExecution).filter((item) => !isTodayItemComplete(item));
+    return this.state.today
+      .filter((item) => !isDeletedEntity(item))
+      .map(normalizeTodayExecution)
+      .filter((item) => !isTodayItemComplete(item));
   }
 
   validateIncompleteTodayNotes() {
@@ -1181,6 +1327,7 @@ export class AppStore {
     const todayValidation = this.validateIncompleteTodayNotes();
 
     const inboxCandidates = this.state.inbox.filter((item) => {
+      if (isDeletedEntity(item)) return false;
       const archived = getStampedValue(item, 'archived', item.archived);
       return !archived;
     });
@@ -1203,7 +1350,7 @@ export class AppStore {
   }
 
   createDailyLogSnapshot() {
-    const planned = this.state.today.map(normalizeTodayExecution);
+    const planned = this.state.today.filter((item) => !isDeletedEntity(item)).map(normalizeTodayExecution);
     const completed = planned.filter((item) => isTodayItemComplete(item));
     const incomplete = planned.filter((item) => !isTodayItemComplete(item));
 

@@ -48,7 +48,10 @@ function processingFields(item) {
 
 export function renderCapture(state, uiState) {
   const activeTab = uiState.captureTab || 'unprocessed';
-  const inboxItems = state.inbox.filter((item) => activeTab === 'archived' ? item.archived : !item.archived);
+  const inboxItems = state.inbox.filter((item) => {
+    if (item.deleted) return false;
+    return activeTab === 'archived' ? item.archived : !item.archived;
+  });
 
   return `
     <section>
@@ -80,6 +83,7 @@ export function renderCapture(state, uiState) {
               <button class="inline-button" data-action="process" data-id="${item.id}" type="button">Process</button>
               <button class="inline-button" data-action="snooze" data-id="${item.id}" type="button">${item.snoozed ? 'Unsnooze' : 'Snooze'}</button>
               <button class="inline-button" data-action="archive" data-id="${item.id}" type="button">${item.archived ? 'Unarchive' : 'Archive'}</button>
+              <button class="inline-button" data-request-delete="inbox" data-delete-mode="soft" data-id="${item.id}" type="button">Request delete</button>
             </div>
           </article>
         `).join('') || '<p class="muted">No items in this tab.</p>'}
