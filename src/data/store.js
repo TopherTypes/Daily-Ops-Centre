@@ -36,6 +36,7 @@ const IMPORTABLE_COLLECTIONS = [
  * Creates baseline mock entities used across modes and Library views.
  */
 function createSeedData() {
+  const now = new Date();
   return {
     inbox: [
       { id: 'in_1', raw: 'Follow up with @Mina on launch metrics tomorrow', type: 'follow-up', archived: false, snoozed: false },
@@ -91,7 +92,9 @@ function createSeedData() {
         recipients: [{ personId: 'p1', status: 'pending' }]
       }
     ],
-    dailyLogs: []
+    dailyLogs: [],
+    // Local-date heartbeat used to detect startup day rollovers in a timezone-safe way.
+    lastActiveDate: toLocalIsoDate(now)
   };
 }
 
@@ -322,6 +325,17 @@ function toLocalIsoDate(dateLike) {
 }
 
 /**
+ * Returns today's local ISO date using the browser/device local timezone.
+ *
+ * Timezone source: JavaScript Date local getters (`getFullYear/getMonth/getDate`),
+ * which ensures rollover behavior aligns with what the user considers "today"
+ * on their current device timezone settings.
+ */
+function getCurrentLocalIsoDate(reference = new Date()) {
+  return toLocalIsoDate(reference);
+}
+
+/**
  * Pure helper that infers a schedule date from relative terms.
  *
  * Supported terms:
@@ -411,10 +425,13 @@ export class AppStore {
     this.db = new DbClient();
     this.state = createSeedData();
     this.listeners = new Set();
+    this.startupRolloverNotice = null;
   }
 
   async init() {
     try {
+      const now = new Date();
+      const currentLocalDate = getCurrentLocalIsoDate(now);
       let loadedSchemaVersion = 1;
       const ready = await this.db.init();
       if (ready) {
@@ -430,9 +447,61 @@ export class AppStore {
       const seedMigration = migrateStateToCurrentSchema(this.state, loadedSchemaVersion, getDeviceId());
       this.state = seedMigration.state;
       this.ensureCollections();
+
+      const rolloverResult = this.applyStartupDayRollover(currentLocalDate, now);
+      // Persist date/rollover outcomes immediately so refreshes are deterministic.
+      if (rolloverResult.didChangeDate || !rolloverResult.previousDate) {
+        await this.persist();
+      }
     } catch {
       // Ignore initialization failures and stay on in-memory data.
     }
+  }
+
+  /**
+   * Startup-only day-change handler.
+   *
+   * If the saved local date differs from today's local date, this clears `today`
+   * and records a lightweight rollover snapshot in dailyLogs for operator context.
+   */
+  applyStartupDayRollover(currentLocalDate, now = new Date()) {
+    const previousDate = typeof this.state.lastActiveDate === 'string' ? this.state.lastActiveDate : '';
+    const didChangeDate = Boolean(previousDate && previousDate !== currentLocalDate);
+
+    if (!didChangeDate) {
+      this.state.lastActiveDate = currentLocalDate;
+      this.startupRolloverNotice = null;
+      return { didChangeDate: false, previousDate, currentLocalDate };
+    }
+
+    const previousTodayItems = Array.isArray(this.state.today) ? structuredClone(this.state.today) : [];
+    if (previousTodayItems.length) {
+      // Optional startup snapshot: keeps yesterday's unclosed Today plan for traceability.
+      this.state.dailyLogs.unshift({
+        id: `log_rollover_${Date.now()}`,
+        date: previousDate,
+        summary: 'Automatic startup rollover: Today reset after date change.',
+        generatedAt: now.toISOString(),
+        notes: [`Recovered ${previousTodayItems.length} Today item(s) from previous date.`],
+        type: 'rollover',
+        rolloverFromDate: previousDate,
+        rolloverToDate: currentLocalDate,
+        priorTodayItems: previousTodayItems
+      });
+    }
+
+    this.state.today = [];
+    this.state.lastActiveDate = currentLocalDate;
+    this.startupRolloverNotice = {
+      previousDate,
+      currentDate: currentLocalDate,
+      recoveredItemCount: previousTodayItems.length
+    };
+    return { didChangeDate: true, previousDate, currentLocalDate };
+  }
+
+  getStartupRolloverNotice() {
+    return this.startupRolloverNotice ? structuredClone(this.startupRolloverNotice) : null;
   }
 
   ensureCollections() {
