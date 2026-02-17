@@ -33,6 +33,9 @@ function createSeedData() {
       { id: 'p1', name: 'Mina Iqbal', email: 'mina@example.com', phone: '(555) 102-3344' },
       { id: 'p2', name: 'Harper Lin', email: 'harper@example.com', phone: '(555) 671-9090' }
     ],
+    projects: [{ id: 'pr1', name: 'Roadmap' }],
+    reminders: [],
+    notes: [],
     meetings: [
       { id: 'm1', title: 'Roadmap sync', time: '10:00', meetingType: 'group', agenda: 'Prioritize Q2 bets', notes: 'Placeholder notes' },
       { id: 'm2', title: 'Mina 1:1', time: '15:30', meetingType: 'one_to_one', agenda: 'Growth feedback', notes: 'Placeholder notes' }
@@ -59,6 +62,44 @@ function createSeedData() {
   };
 }
 
+function slugify(value) {
+  return (value || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+}
+
+function titleFromRaw(rawText) {
+  return rawText.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Deterministic token parser for the documented capture syntax.
+ *
+ * Intentionally avoids heuristics in this phase so contributors can safely
+ * layer inference rules later without changing current behavior.
+ */
+function parseCaptureTokens(rawText) {
+  const people = [...rawText.matchAll(/(^|\s)@([A-Za-z0-9][\w-]*)/g)].map((match) => match[2]);
+  const projects = [...rawText.matchAll(/(^|\s)#([A-Za-z0-9][\w-]*)/g)].map((match) => match[2]);
+  const priorityMatch = rawText.match(/(^|\s)!p([1-5])(\s|$)/i);
+  const dueMatch = rawText.match(/(^|\s)due:(\d{4}-\d{2}-\d{2})(\s|$)/i);
+  const doMatch = rawText.match(/(^|\s)do:(\d{4}-\d{2}-\d{2})(\s|$)/i);
+  const typeMatch = rawText.match(/(^|\s)type:(task|meeting|note|reminder|followup|project|person)(\s|$)/i);
+  const contextMatch = rawText.match(/(^|\s)(work|personal):(\s|$)/i);
+
+  return {
+    people,
+    projects,
+    priority: priorityMatch ? Number(priorityMatch[2]) : null,
+    dueDate: dueMatch?.[2] || '',
+    scheduleDate: doMatch?.[2] || '',
+    type: typeMatch?.[2]?.toLowerCase() || '',
+    context: contextMatch?.[2]?.toLowerCase() || ''
+  };
+}
+
 /**
  * In-memory store with persistence seam for future schema implementation.
  */
@@ -78,8 +119,17 @@ export class AppStore {
           this.state = snapshot.payload;
         }
       }
+      this.ensureCollections();
     } catch {
       // Ignore initialization failures and stay on in-memory data.
+    }
+  }
+
+  ensureCollections() {
+    for (const collection of ['tasks', 'meetings', 'people', 'projects', 'followUps', 'reminders', 'notes']) {
+      if (!Array.isArray(this.state[collection])) {
+        this.state[collection] = [];
+      }
     }
   }
 
@@ -115,6 +165,124 @@ export class AppStore {
     const item = this.state.inbox.find((entry) => entry.id === id);
     if (!item) return;
     item.archived = !item.archived;
+    await this.persist();
+    this.emit();
+  }
+
+  findOrCreatePerson(name, provenance) {
+    const key = slugify(name);
+    const existing = this.state.people.find((person) => slugify(person.name) === key);
+    if (existing) return existing;
+
+    const created = {
+      id: `p_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name,
+      source: provenance
+    };
+    this.state.people.push(created);
+    return created;
+  }
+
+  findOrCreateProject(name, provenance) {
+    const key = slugify(name);
+    const existing = this.state.projects.find((project) => slugify(project.name) === key);
+    if (existing) return existing;
+
+    const created = {
+      id: `pr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name,
+      source: provenance
+    };
+    this.state.projects.push(created);
+    return created;
+  }
+
+  /**
+   * Converts an inbox item into a concrete entity and archives the source inbox record.
+   *
+   * Conversion precedence is deterministic:
+   * 1) explicit inline fields, 2) explicit raw tokens, 3) safe defaults.
+   */
+  async processInboxItem(inboxId, targetType, fields = {}) {
+    this.ensureCollections();
+
+    const inboxItem = this.state.inbox.find((entry) => entry.id === inboxId);
+    if (!inboxItem) return;
+
+    const parsed = parseCaptureTokens(inboxItem.raw || '');
+    const provenance = {
+      type: 'inbox',
+      inboxId: inboxItem.id,
+      raw: inboxItem.raw,
+      processedAt: new Date().toISOString()
+    };
+
+    // Deterministic field merge: form controls override parsed tokens when present.
+    const peopleTokens = [
+      ...parsed.people,
+      ...(fields.people || '')
+        .split(/[\s,]+/)
+        .map((value) => value.replace(/^@/, '').trim())
+        .filter(Boolean)
+    ];
+    const uniquePeopleTokens = [...new Set(peopleTokens)];
+    const personEntities = uniquePeopleTokens.map((name) => this.findOrCreatePerson(name, provenance));
+
+    const projectToken = (fields.project || '').replace(/^#/, '').trim() || parsed.projects[0] || '';
+    const projectEntity = projectToken ? this.findOrCreateProject(projectToken, provenance) : null;
+
+    const typeAliasMap = { 'follow-up': 'followup', follow_up: 'followup' };
+    const normalizedTarget = typeAliasMap[targetType] || targetType;
+    const resolvedType = normalizedTarget || parsed.type || 'task';
+
+    const baseRecord = {
+      id: `${resolvedType}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      title: fields.title || titleFromRaw(inboxItem.raw),
+      context: fields.context || parsed.context || 'work',
+      priority: Number(fields.priority || parsed.priority || 3),
+      due: fields.dueDate || parsed.dueDate || '',
+      scheduled: fields.scheduleDate || parsed.scheduleDate || '',
+      source: provenance,
+      linkedPeople: personEntities.map((person) => person.id),
+      linkedProjects: projectEntity ? [projectEntity.id] : []
+    };
+
+    // Keep conversion logic explicit per entity type so contributors can safely extend it.
+    if (resolvedType === 'task') {
+      this.state.tasks.unshift({ ...baseRecord, status: 'backlog' });
+    } else if (resolvedType === 'meeting') {
+      this.state.meetings.unshift({
+        ...baseRecord,
+        meetingType: personEntities.length === 1 ? 'one_to_one' : 'group',
+        agenda: '',
+        notes: ''
+      });
+    } else if (resolvedType === 'person') {
+      const personName = fields.title || personEntities[0]?.name || titleFromRaw(inboxItem.raw);
+      this.findOrCreatePerson(personName, provenance);
+    } else if (resolvedType === 'project') {
+      const projectName = fields.title || projectEntity?.name || titleFromRaw(inboxItem.raw);
+      this.findOrCreateProject(projectName, provenance);
+    } else if (resolvedType === 'followup') {
+      this.state.followUps.unshift({
+        ...baseRecord,
+        source: 'inbox',
+        sourceInboxId: inboxItem.id,
+        recipients: personEntities.map((person) => ({ personId: person.id, status: 'pending' }))
+      });
+    } else if (resolvedType === 'reminder') {
+      this.state.reminders.unshift({ ...baseRecord, status: 'pending' });
+    } else if (resolvedType === 'note') {
+      this.state.notes.unshift({ ...baseRecord, body: inboxItem.raw });
+    } else {
+      this.state.tasks.unshift({ ...baseRecord, status: 'backlog' });
+    }
+
+    // Archive the source item after successful conversion to preserve inbox provenance.
+    inboxItem.archived = true;
+    inboxItem.processedType = resolvedType;
+    inboxItem.processedAt = provenance.processedAt;
+
     await this.persist();
     this.emit();
   }

@@ -66,6 +66,19 @@ function renderShell(state) {
   `;
 }
 
+
+function getProcessingFields(button) {
+  const editor = button.closest('[data-inline-processor]');
+  if (!editor) return {};
+
+  const fieldNodes = editor.querySelectorAll('[data-process-field]');
+  const fields = {};
+  for (const node of fieldNodes) {
+    fields[node.dataset.processField] = node.value?.trim() || '';
+  }
+  return fields;
+}
+
 function bindGlobalEvents() {
   document.addEventListener('submit', async (event) => {
     const quickCapture = event.target.closest('[data-quick-capture]');
@@ -93,6 +106,18 @@ function bindGlobalEvents() {
       const id = processButton.dataset.id;
       uiState.processingInboxId = uiState.processingInboxId === id ? null : id;
       store.emit();
+      return;
+    }
+
+    const processTargetButton = event.target.closest('[data-process-target]');
+    if (processTargetButton) {
+      const fields = getProcessingFields(processTargetButton);
+      await store.processInboxItem(
+        processTargetButton.dataset.id,
+        processTargetButton.dataset.processTarget,
+        fields
+      );
+      uiState.processingInboxId = null;
       return;
     }
 
