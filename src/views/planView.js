@@ -46,6 +46,7 @@ function renderSuggestionColumn(name, items, todaySuggestionIds) {
 }
 
 export function renderPlan(state) {
+  // Store-level rebuildSuggestionsForDate() keeps these buckets populated from live entity data.
   // Today rows also participate in list navigation for consistent Plan-mode keyboard movement.
   const todayItems = state.today.filter(isPlanVisible);
   const todaySuggestionIds = new Set(todayItems.map((item) => item.suggestionId || item.id));

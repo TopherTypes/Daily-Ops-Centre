@@ -224,6 +224,30 @@ function isArchivedEntity(entry) {
   return Boolean(getStampedValue(entry, 'archived', entry?.archived || false));
 }
 
+function isActiveEntity(entry) {
+  return Boolean(entry) && !isDeletedEntity(entry) && !isArchivedEntity(entry);
+}
+
+function getNumericPriority(entry, fallback = 3) {
+  const value = Number(getStampedValue(entry, 'priority', entry?.priority ?? fallback));
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function getTimeSinceDays(isoDate, referenceDate = new Date()) {
+  if (!isoDate) return Number.POSITIVE_INFINITY;
+  const timestamp = Date.parse(isoDate);
+  if (Number.isNaN(timestamp)) return Number.POSITIVE_INFINITY;
+  return (referenceDate.getTime() - timestamp) / (24 * 60 * 60 * 1000);
+}
+
+function getDayDiff(fromLocalDate, toLocalDate) {
+  if (!fromLocalDate || !toLocalDate) return Number.POSITIVE_INFINITY;
+  const from = Date.parse(`${fromLocalDate}T00:00:00`);
+  const to = Date.parse(`${toLocalDate}T00:00:00`);
+  if (Number.isNaN(from) || Number.isNaN(to)) return Number.POSITIVE_INFINITY;
+  return Math.round((to - from) / (24 * 60 * 60 * 1000));
+}
+
 
 function createTodayExecutionState(status = 'not started') {
   return {
@@ -714,6 +738,7 @@ export class AppStore {
       });
 
       const rolloverResult = this.applyStartupDayRollover(currentLocalDate, now);
+      this.rebuildSuggestionsForDate(currentLocalDate);
       // Persist date/rollover outcomes immediately so refreshes are deterministic.
       if (rolloverResult.didChangeDate || !rolloverResult.previousDate || this.migrationWarnings.length) {
         await this.persist();
@@ -829,6 +854,202 @@ export class AppStore {
     this.state = applyStateGuards(this.state);
   }
 
+  /**
+   * Rebuilds Plan suggestions from active entities for a specific local date.
+   *
+   * Rules intentionally mirror SPECS.md so Plan buckets are never stale placeholders.
+   */
+  rebuildSuggestionsForDate(localDate = getCurrentLocalIsoDate()) {
+    this.ensureCollections();
+
+    const today = localDate || getCurrentLocalIsoDate();
+    const nowIso = new Date().toISOString();
+    const deviceId = getDeviceId();
+    const existingById = new Map();
+    for (const bucket of ['must', 'should', 'could']) {
+      for (const entry of this.state.suggestions[bucket] || []) {
+        if (entry?.id) existingById.set(entry.id, entry);
+      }
+    }
+
+    const next = { must: [], should: [], could: [] };
+    const seenSuggestionIds = new Set();
+    const peopleById = new Map(this.state.people.map((person) => [person.id, person]));
+
+    const pushSuggestion = (bucket, { id, title, type, meta, sourceType = '', sourceId = '' }) => {
+      if (!id || seenSuggestionIds.has(id)) return;
+      seenSuggestionIds.add(id);
+
+      // Preserve stable provenance IDs to avoid duplicate suggestions across rebuilds.
+      const existing = existingById.get(id);
+      const suggestion = normalizeEntityLifecycle({
+        id,
+        title,
+        type,
+        meta,
+        sourceType,
+        sourceId,
+        archived: false,
+        deleted: false,
+        deletedAt: '',
+        ...(existing ? { createdAt: existing.createdAt || nowIso } : { createdAt: nowIso })
+      });
+
+      // Keep mutable fields stamped so import merge semantics remain field-aware.
+      stampEntityMutableFields(suggestion, MUTABLE_FIELDS_BY_COLLECTION.suggestions, deviceId, nowIso);
+      next[bucket].push(suggestion);
+    };
+
+    // MUST: meetings today.
+    for (const meeting of this.state.meetings.filter(isActiveEntity)) {
+      if (getStampedValue(meeting, 'scheduled', meeting.scheduled || '') !== today) continue;
+      pushSuggestion('must', {
+        id: `sg_must_meeting_${meeting.id}`,
+        title: getStampedValue(meeting, 'title', meeting.title || 'Untitled meeting'),
+        type: 'meeting',
+        meta: getStampedValue(meeting, 'time', meeting.time || 'today'),
+        sourceType: 'meeting',
+        sourceId: meeting.id
+      });
+    }
+
+    const schedulables = [
+      ...this.state.tasks.filter(isActiveEntity).map((entity) => ({ entity, type: 'task' })),
+      ...this.state.reminders.filter(isActiveEntity).map((entity) => ({ entity, type: 'reminder' })),
+      ...this.state.meetings.filter(isActiveEntity).map((entity) => ({ entity, type: 'meeting' }))
+    ];
+
+    // MUST: items scheduled today.
+    for (const { entity, type } of schedulables) {
+      if (getStampedValue(entity, 'scheduled', entity.scheduled || '') !== today) continue;
+      pushSuggestion('must', {
+        id: `sg_must_scheduled_${entity.id}`,
+        title: getStampedValue(entity, 'title', entity.title || 'Scheduled item'),
+        type,
+        meta: 'scheduled today',
+        sourceType: type,
+        sourceId: entity.id
+      });
+    }
+
+    // MUST: due-today commitments (tasks/reminders/meetings) and reminder-specific due now.
+    for (const { entity, type } of schedulables) {
+      if (getStampedValue(entity, 'due', entity.due || '') !== today) continue;
+      pushSuggestion('must', {
+        id: `sg_must_due_${entity.id}`,
+        title: getStampedValue(entity, 'title', entity.title || 'Due item'),
+        type,
+        meta: type === 'reminder' ? 'reminder due today' : 'due today',
+        sourceType: type,
+        sourceId: entity.id
+      });
+    }
+
+    // MUST: pending follow-up recipients.
+    for (const followUp of this.state.followUps.filter(isActiveEntity)) {
+      const recipients = Array.isArray(getStampedValue(followUp, 'recipients', followUp.recipients || []))
+        ? getStampedValue(followUp, 'recipients', followUp.recipients || [])
+        : [];
+      const pendingRecipients = recipients.filter((recipient) => recipient?.status === 'pending');
+      if (!pendingRecipients.length) continue;
+      const recipientPreview = pendingRecipients
+        .slice(0, 2)
+        .map((recipient) => peopleById.get(recipient.personId)?.name || recipient.personId)
+        .join(', ');
+      const suffix = pendingRecipients.length > 2 ? ` +${pendingRecipients.length - 2}` : '';
+      pushSuggestion('must', {
+        id: `sg_must_followup_${followUp.id}`,
+        title: getStampedValue(followUp, 'title', followUp.title || 'Follow-up'),
+        type: 'follow-up',
+        meta: `${pendingRecipients.length} pending${recipientPreview ? `: ${recipientPreview}${suffix}` : ''}`,
+        sourceType: 'followup',
+        sourceId: followUp.id
+      });
+    }
+
+    // SHOULD: high-priority active tasks.
+    for (const task of this.state.tasks.filter(isActiveEntity)) {
+      const status = String(getStampedValue(task, 'status', task.status || 'backlog')).toLowerCase();
+      if (['done', 'cancelled', 'archived'].includes(status)) continue;
+      const priority = getNumericPriority(task);
+      if (priority > 2) continue;
+      pushSuggestion('should', {
+        id: `sg_should_priority_${task.id}`,
+        title: getStampedValue(task, 'title', task.title || 'Priority task'),
+        type: 'task',
+        meta: `high priority p${priority}`,
+        sourceType: 'task',
+        sourceId: task.id
+      });
+    }
+
+    // SHOULD: upcoming deadlines in the next 3 days (excluding today).
+    for (const { entity, type } of schedulables) {
+      const due = getStampedValue(entity, 'due', entity.due || '');
+      const daysUntilDue = getDayDiff(today, due);
+      if (!(daysUntilDue >= 1 && daysUntilDue <= 3)) continue;
+      pushSuggestion('should', {
+        id: `sg_should_deadline_${entity.id}`,
+        title: getStampedValue(entity, 'title', entity.title || 'Upcoming deadline'),
+        type,
+        meta: `due in ${daysUntilDue} day${daysUntilDue === 1 ? '' : 's'}`,
+        sourceType: type,
+        sourceId: entity.id
+      });
+    }
+
+    // SHOULD: stale projects with no linked activity updates in 7+ days.
+    for (const project of this.state.projects.filter(isActiveEntity)) {
+      const projectId = project.id;
+      const linkedTaskAges = this.state.tasks
+        .filter((task) => isActiveEntity(task) && (task.linkedProjects || []).includes(projectId))
+        .map((task) => getTimeSinceDays(task.updatedAt || task.createdAt || ''));
+      const freshestLinkedAge = linkedTaskAges.length ? Math.min(...linkedTaskAges) : Number.POSITIVE_INFINITY;
+      const projectAge = getTimeSinceDays(project.updatedAt || project.createdAt || '');
+      const staleDays = Math.min(projectAge, freshestLinkedAge);
+      if (!(staleDays >= 7 || staleDays === Number.POSITIVE_INFINITY)) continue;
+      pushSuggestion('should', {
+        id: `sg_should_stale_project_${project.id}`,
+        title: getStampedValue(project, 'name', project.name || 'Project'),
+        type: 'project',
+        meta: staleDays === Number.POSITIVE_INFINITY ? 'no recent updates' : `stale ${Math.floor(staleDays)}d`,
+        sourceType: 'project',
+        sourceId: project.id
+      });
+    }
+
+    // COULD: backlog/context candidates ordered by priority then due date.
+    const backlogCandidates = this.state.tasks
+      .filter(isActiveEntity)
+      .filter((task) => {
+        const status = String(getStampedValue(task, 'status', task.status || 'backlog')).toLowerCase();
+        return ['backlog', 'waiting', 'blocked'].includes(status);
+      })
+      .sort((a, b) => {
+        const priorityDiff = getNumericPriority(a) - getNumericPriority(b);
+        if (priorityDiff !== 0) return priorityDiff;
+        const aDue = getStampedValue(a, 'due', a.due || '9999-12-31') || '9999-12-31';
+        const bDue = getStampedValue(b, 'due', b.due || '9999-12-31') || '9999-12-31';
+        return aDue.localeCompare(bDue);
+      })
+      .slice(0, 8);
+
+    for (const task of backlogCandidates) {
+      const context = getStampedValue(task, 'context', task.context || 'work');
+      pushSuggestion('could', {
+        id: `sg_could_backlog_${task.id}`,
+        title: getStampedValue(task, 'title', task.title || 'Backlog candidate'),
+        type: 'task',
+        meta: `${context} backlog · p${getNumericPriority(task)}`,
+        sourceType: 'task',
+        sourceId: task.id
+      });
+    }
+
+    this.state.suggestions = next;
+    return this.state.suggestions;
+  }
+
   subscribe(listener) {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -918,6 +1139,9 @@ export class AppStore {
       mergeSummary[collection] = merged.length;
     }
 
+    // Imported records may change plan obligations, so suggestions are recomputed from entity truth.
+    this.rebuildSuggestionsForDate(getCurrentLocalIsoDate());
+
     const persistResult = await this.persist();
     if (!persistResult.ok) {
       return fail('IMPORT_PERSIST_FAILED', 'Import failed because data could not be persisted locally.');
@@ -1004,6 +1228,7 @@ export class AppStore {
 
     const nextArchived = !getStampedValue(item, 'archived', item.archived);
     updateStampedField(item, 'archived', nextArchived, getDeviceId());
+    this.rebuildSuggestionsForDate(getCurrentLocalIsoDate());
     await this.persist();
     this.emit();
   }
@@ -1015,6 +1240,7 @@ export class AppStore {
     // Snooze is a lightweight inbox state used to intentionally postpone processing.
     const nextSnoozed = !getStampedValue(item, 'snoozed', item.snoozed || false);
     updateStampedField(item, 'snoozed', nextSnoozed, getDeviceId());
+    this.rebuildSuggestionsForDate(getCurrentLocalIsoDate());
     await this.persist();
     this.emit();
   }
@@ -1071,6 +1297,8 @@ export class AppStore {
       }
     }
 
+    this.rebuildSuggestionsForDate(getCurrentLocalIsoDate());
+
     await this.persist();
     this.emit();
     return true;
@@ -1091,6 +1319,8 @@ export class AppStore {
       updateStampedField(target, 'archived', false, deviceId, now);
     }
 
+    this.rebuildSuggestionsForDate(getCurrentLocalIsoDate());
+
     await this.persist();
     this.emit();
   }
@@ -1106,6 +1336,7 @@ export class AppStore {
     const now = new Date().toISOString();
     const nextArchived = !isArchivedEntity(target);
     updateStampedField(target, 'archived', nextArchived, getDeviceId(), now);
+    this.rebuildSuggestionsForDate(getCurrentLocalIsoDate());
 
     await this.persist();
     this.emit();
@@ -1130,6 +1361,7 @@ export class AppStore {
     const hasPending = group.recipients.some((entry) => entry.status !== 'complete');
     updateStampedField(group, 'recipients', group.recipients, getDeviceId());
     updateStampedField(group, 'status', hasPending ? 'pending' : 'complete', getDeviceId());
+    this.rebuildSuggestionsForDate(getCurrentLocalIsoDate());
 
     await this.persist();
     this.emit();
@@ -1299,6 +1531,9 @@ export class AppStore {
     updateStampedField(inboxItem, 'snoozed', false, deviceId, now);
     updateStampedField(inboxItem, 'processedType', resolvedType, deviceId, now);
     updateStampedField(inboxItem, 'processedAt', provenance.processedAt, deviceId, now);
+
+    // Keep Plan dynamic immediately after inbox processing and conversion side effects.
+    this.rebuildSuggestionsForDate(getCurrentLocalIsoDate());
 
     await this.commitStateMutation(previousState, 'process');
     return ok();
@@ -1535,6 +1770,7 @@ export class AppStore {
 
   async resetTodayForNextDay() {
     this.state.today = [];
+    this.rebuildSuggestionsForDate(getCurrentLocalIsoDate());
     await this.persist();
     this.emit();
   }
@@ -1544,6 +1780,7 @@ export class AppStore {
    */
   async loadSampleData() {
     this.state = applyStateGuards(createDemoSeedData());
+    this.rebuildSuggestionsForDate(getCurrentLocalIsoDate());
     await this.persist();
     this.emit();
   }
@@ -1553,6 +1790,7 @@ export class AppStore {
    */
   async resetAllLocalData() {
     this.state = applyStateGuards(createEmptyState());
+    this.rebuildSuggestionsForDate(getCurrentLocalIsoDate());
     await this.persist();
     this.emit();
   }
