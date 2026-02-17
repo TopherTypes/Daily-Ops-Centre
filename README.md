@@ -44,10 +44,23 @@ Built for GitHub Pages (no backend). Data is stored locally and can be exported/
 
 ### 2) Plan (daily, ~08:00)
 - Daily plan starts empty.
-- Suggestions are surfaced as:
-  - **Must:** meetings today, scheduled today, due today, reminders due today, pending updates
-  - **Should:** high priority, upcoming deadlines, stale projects, etc.
-  - **Could:** backlog candidates filtered by context/priority
+- Suggestions are rebuilt from current entity data (tasks, meetings, reminders, follow-ups, projects) whenever planning-relevant data changes.
+- Generation rules are deterministic and date-aware (`localDate`):
+  - **Must:**
+    - meetings scheduled for today,
+    - active items scheduled for today,
+    - active items due today,
+    - reminders due today,
+    - follow-up groups with pending recipients (includes pending count + recipient preview).
+  - **Should:**
+    - high-priority active tasks (`p1`/`p2`),
+    - upcoming deadlines within 1–3 days,
+    - stale projects (no recent activity / linked task movement).
+  - **Could:**
+    - backlog-context candidates from active tasks in backlog/waiting/blocked states, ordered by priority and due date.
+- Suggestion IDs are stable per source entity, deduplicated during rebuild, and archived/deleted source records are excluded so user intent is preserved.
+- Each generated suggestion is normalized with lifecycle defaults and stamped mutable fields for merge-safe import/export behavior.
+- Rebuild triggers include startup hydration, inbox processing, status/lifecycle updates that affect planning, close-day reset, and import completion.
 - Assign items into Today as Must/Should/Could and order them.
 
 ### 3) Execute
