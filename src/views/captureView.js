@@ -59,6 +59,7 @@ export function renderCapture(state, uiState) {
             <div class="row-main">
               <div class="inline-fields">
                 <span class="chip">${escapeHtml(item.type)}</span>
+                ${item.snoozed ? '<span class="chip">snoozed</span>' : ''}
                 <strong>${escapeHtml(item.raw)}</strong>
               </div>
               <div class="row-meta muted">id: ${item.id}</div>
@@ -66,6 +67,7 @@ export function renderCapture(state, uiState) {
             </div>
             <div class="inline-actions">
               <button class="inline-button" data-action="process" data-id="${item.id}" type="button">Process</button>
+              <button class="inline-button" data-action="snooze" data-id="${item.id}" type="button">${item.snoozed ? 'Unsnooze' : 'Snooze'}</button>
               <button class="inline-button" data-action="archive" data-id="${item.id}" type="button">${item.archived ? 'Unarchive' : 'Archive'}</button>
             </div>
           </article>
