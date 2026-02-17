@@ -84,9 +84,20 @@ function bindGlobalEvents() {
     const quickCapture = event.target.closest('[data-quick-capture]');
     const captureForm = event.target.closest('[data-capture-form]');
     const executeNoteForm = event.target.closest('[data-execute-note-form]');
-    if (!quickCapture && !captureForm && !executeNoteForm) return;
+    const closeNoteForm = event.target.closest('[data-close-note-form]');
+    if (!quickCapture && !captureForm && !executeNoteForm && !closeNoteForm) return;
 
     event.preventDefault();
+
+    if (closeNoteForm) {
+      const itemId = closeNoteForm.dataset.id;
+      const noteInput = closeNoteForm.querySelector('textarea[name="note"]');
+      const note = noteInput?.value?.trim() || '';
+      if (!itemId || !note) return;
+      await store.addTodayUpdateNote(itemId, note);
+      noteInput.value = '';
+      return;
+    }
 
     if (executeNoteForm) {
       const itemId = executeNoteForm.dataset.id;
@@ -173,6 +184,30 @@ function bindGlobalEvents() {
         await store.deferTodayItem(itemId);
       } else if (action === 'archive') {
         await store.archiveTodayItem(itemId);
+      }
+      return;
+    }
+
+
+    const closeActionButton = event.target.closest('[data-close-action]');
+    if (closeActionButton) {
+      const action = closeActionButton.dataset.closeAction;
+      if (action === 'validate-notes') {
+        const validation = store.validateIncompleteTodayNotes();
+        if (!validation.valid) {
+          window.alert(`Missing update note for ${validation.missing.length} incomplete item(s).`);
+        } else {
+          window.alert('All incomplete Today items have update notes.');
+        }
+      } else if (action === 'generate-log') {
+        await store.generateDailyLogSnapshot();
+      } else if (action === 'close-day') {
+        const result = await store.closeDay();
+        if (!result.ok) {
+          window.alert(`Close blocked: add update notes for ${result.missing.length} incomplete item(s) first.`);
+        } else {
+          window.alert('Day closed. Daily Log saved and Today plan reset.');
+        }
       }
       return;
     }

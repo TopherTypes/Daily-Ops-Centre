@@ -58,7 +58,8 @@ function createSeedData() {
         meetingId: 'm2',
         recipients: [{ personId: 'p1', status: 'pending' }]
       }
-    ]
+    ],
+    dailyLogs: []
   };
 }
 
@@ -93,6 +94,16 @@ function normalizeTodayExecution(item) {
       notes: Array.isArray(execution.notes) ? execution.notes : []
     }
   };
+}
+
+function isTodayItemComplete(item) {
+  const status = item.execution?.status || item.status || 'not started';
+  return status === 'complete';
+}
+
+function getLastTodayNote(item) {
+  const notes = item.execution?.notes || [];
+  return notes.length ? notes[notes.length - 1] : null;
 }
 
 /**
@@ -147,7 +158,7 @@ export class AppStore {
   }
 
   ensureCollections() {
-    for (const collection of ['tasks', 'meetings', 'people', 'projects', 'followUps', 'reminders', 'notes']) {
+    for (const collection of ['tasks', 'meetings', 'people', 'projects', 'followUps', 'reminders', 'notes', 'dailyLogs']) {
       if (!Array.isArray(this.state[collection])) {
         this.state[collection] = [];
       }
@@ -390,6 +401,73 @@ export class AppStore {
     // Persistence expectation: notes are workflow evidence and must be saved with each write.
     await this.persist();
     this.emit();
+  }
+
+  getIncompleteTodayItems() {
+    // Close-mode guard: an item is incomplete unless it is explicitly marked `complete`.
+    // We intentionally treat deferred/blocked/waiting/cancelled as incomplete so closure history captures unfinished intent.
+    return this.state.today.map(normalizeTodayExecution).filter((item) => !isTodayItemComplete(item));
+  }
+
+  validateIncompleteTodayNotes() {
+    const missing = this.getIncompleteTodayItems().filter((item) => {
+      const lastNote = getLastTodayNote(item);
+      return !lastNote?.text?.trim();
+    });
+
+    return {
+      valid: missing.length === 0,
+      missing
+    };
+  }
+
+  createDailyLogSnapshot() {
+    const planned = this.state.today.map(normalizeTodayExecution);
+    const completed = planned.filter((item) => isTodayItemComplete(item));
+    const incomplete = planned.filter((item) => !isTodayItemComplete(item));
+
+    return {
+      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: new Date().toISOString(),
+      plannedCount: planned.length,
+      planned: planned.map((item) => ({ id: item.id, title: item.title, status: item.execution.status })),
+      completed: completed.map((item) => ({ id: item.id, title: item.title, status: item.execution.status })),
+      incomplete: incomplete.map((item) => {
+        const lastNote = getLastTodayNote(item);
+        return {
+          id: item.id,
+          title: item.title,
+          status: item.execution.status,
+          lastUpdate: lastNote ? { text: lastNote.text, createdAt: lastNote.createdAt } : null
+        };
+      })
+    };
+  }
+
+  async generateDailyLogSnapshot() {
+    const snapshot = this.createDailyLogSnapshot();
+    this.state.dailyLogs.unshift(snapshot);
+    await this.persist();
+    this.emit();
+    return snapshot;
+  }
+
+  async resetTodayForNextDay() {
+    this.state.today = [];
+    await this.persist();
+    this.emit();
+  }
+
+  async closeDay() {
+    const validation = this.validateIncompleteTodayNotes();
+    if (!validation.valid) {
+      return { ok: false, reason: 'missing_updates', missing: validation.missing };
+    }
+
+    // Guardrail: enforce update-note validation before wiping Today so incomplete context isn't permanently lost.
+    const snapshot = await this.generateDailyLogSnapshot();
+    await this.resetTodayForNextDay();
+    return { ok: true, snapshot };
   }
 
   emit() {
