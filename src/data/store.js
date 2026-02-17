@@ -1,5 +1,16 @@
 import { DbClient } from './db.js';
 import { getDeviceId } from './device.js';
+import {
+  STATUS_ENUMS,
+  fail,
+  normalizeFollowUpRecipients,
+  normalizeIsoDate,
+  normalizeRequiredText,
+  ok,
+  validateId,
+  validateIsoDateTime,
+  validateStatusEnum
+} from './validation.js';
 
 const SNAPSHOT_SCHEMA_VERSION = 3;
 const STATE_SCHEMA_VERSION = 3;
@@ -139,6 +150,16 @@ function slugify(value) {
 
 function titleFromRaw(rawText) {
   return rawText.replace(/\s+/g, ' ').trim();
+}
+
+function normalizeMutationDates(fields = {}) {
+  const dueDateResult = normalizeIsoDate(fields.dueDate, 'dueDate');
+  if (!dueDateResult.ok) return dueDateResult;
+
+  const scheduleDateResult = normalizeIsoDate(fields.scheduleDate, 'scheduleDate');
+  if (!scheduleDateResult.ok) return scheduleDateResult;
+
+  return ok({ dueDate: dueDateResult.value, scheduleDate: scheduleDateResult.value });
 }
 
 function isStampedField(value) {
@@ -835,17 +856,18 @@ export class AppStore {
    * Validates and merges an imported snapshot into current state.
    */
   async importSnapshot(payload) {
+    // Envelope guard blocks non-object payloads before any merge can mutate trusted state.
     if (!payload || typeof payload !== 'object') {
-      throw new Error('Import failed: snapshot payload must be an object.');
+      return fail('IMPORT_PAYLOAD_INVALID', 'Import failed: snapshot payload must be an object.');
     }
 
     const { schemaVersion, collections, deviceId } = payload;
     if (typeof schemaVersion !== 'number' || schemaVersion < 1 || schemaVersion > SNAPSHOT_SCHEMA_VERSION) {
-      throw new Error(`Import failed: unsupported schemaVersion ${schemaVersion}.`);
+      return fail('IMPORT_SCHEMA_UNSUPPORTED', `Import failed: unsupported schemaVersion ${schemaVersion}.`, { schemaVersion });
     }
 
     if (!collections || typeof collections !== 'object') {
-      throw new Error('Import failed: missing collections object.');
+      return fail('IMPORT_COLLECTIONS_MISSING', 'Import failed: missing collections object.');
     }
 
     const migratedImport = migrateStateToCurrentSchema(collections, schemaVersion, deviceId || getDeviceId());
@@ -864,12 +886,12 @@ export class AppStore {
         const localSuggestions = this.state.suggestions || {};
         const importedSuggestions = migratedImport.state.suggestions;
         if (!importedSuggestions || typeof importedSuggestions !== 'object') {
-          throw new Error('Import failed: suggestions must be an object containing must/should/could arrays.');
+          return fail('IMPORT_SUGGESTIONS_INVALID', 'Import failed: suggestions must be an object containing must/should/could arrays.');
         }
 
         for (const bucket of ['must', 'should', 'could']) {
           if (!Array.isArray(importedSuggestions[bucket])) {
-            throw new Error(`Import failed: suggestions.${bucket} must be an array.`);
+            return fail('IMPORT_SUGGESTIONS_BUCKET_INVALID', `Import failed: suggestions.${bucket} must be an array.`, { bucket });
           }
         }
 
@@ -887,7 +909,7 @@ export class AppStore {
       const localCollection = this.state[collection];
       const importedCollection = migratedImport.state[collection];
       if (!Array.isArray(importedCollection)) {
-        throw new Error(`Import failed: collection "${collection}" must be an array.`);
+        return fail('IMPORT_COLLECTION_INVALID', `Import failed: collection "${collection}" must be an array.`, { collection });
       }
 
       const mutableFields = MUTABLE_FIELDS_BY_COLLECTION[collection] || [];
@@ -896,9 +918,12 @@ export class AppStore {
       mergeSummary[collection] = merged.length;
     }
 
-    await this.persist();
+    const persistResult = await this.persist();
+    if (!persistResult.ok) {
+      return fail('IMPORT_PERSIST_FAILED', 'Import failed because data could not be persisted locally.');
+    }
     this.emit();
-    return { ok: true, merged: mergeSummary };
+    return ok({ merged: mergeSummary });
   }
 
   async persist() {
@@ -1156,12 +1181,23 @@ export class AppStore {
     this.ensureCollections();
     const previousState = structuredClone(this.state);
 
-    const inboxItem = this.state.inbox.find((entry) => entry.id === inboxId && !isDeletedEntity(entry));
-    if (!inboxItem) return;
+    // ID guard prevents writing conversions against malformed selectors from UI/query params.
+    const idResult = validateId(inboxId, 'inboxId');
+    if (!idResult.ok) return idResult;
+
+    const inboxItem = this.state.inbox.find((entry) => entry.id === idResult.value && !isDeletedEntity(entry));
+    if (!inboxItem) return fail('INBOX_ITEM_NOT_FOUND', 'Inbox item not found or already deleted.', { inboxId });
 
     const inboxRaw = getStampedValue(inboxItem, 'raw', inboxItem.raw) || '';
     const parsed = parseCaptureTokens(inboxRaw, { enableHeuristics: true });
     const now = new Date().toISOString();
+    const nowValidation = validateIsoDateTime(now, 'processedAt');
+    if (!nowValidation.ok) return nowValidation;
+
+    // Date guards protect due/schedule indexes that assume ISO date-only values.
+    const datesValidation = normalizeMutationDates(fields);
+    if (!datesValidation.ok) return datesValidation;
+
     const deviceId = getDeviceId();
     const provenance = {
       type: 'inbox',
@@ -1193,8 +1229,8 @@ export class AppStore {
       title: fields.title || titleFromRaw(inboxRaw),
       context: fields.context || parsed.context || 'work',
       priority: Number(fields.priority || parsed.priority || 3),
-      due: fields.dueDate || parsed.dueDate || '',
-      scheduled: fields.scheduleDate || parsed.scheduleDate || '',
+      due: datesValidation.dueDate || parsed.dueDate || '',
+      scheduled: datesValidation.scheduleDate || parsed.scheduleDate || '',
       source: provenance,
       linkedPeople: personEntities.map((person) => person.id),
       linkedProjects: projectEntity ? [projectEntity.id] : [],
@@ -1202,6 +1238,11 @@ export class AppStore {
       deleted: false,
       deletedAt: ''
     };
+
+    // Required title guard ensures converted entities remain renderable in list/detail views.
+    const titleResult = normalizeRequiredText(baseRecord.title, 'title', titleFromRaw(inboxRaw));
+    if (!titleResult.ok) return titleResult;
+    baseRecord.title = titleResult.value;
 
     // Keep conversion logic explicit per entity type so contributors can safely extend it.
     if (resolvedType === 'task') {
@@ -1219,16 +1260,23 @@ export class AppStore {
       this.state.meetings.unshift(nextMeeting);
     } else if (resolvedType === 'person') {
       const personName = fields.title || personEntities[0]?.name || titleFromRaw(inboxRaw);
-      this.findOrCreatePerson(personName, provenance);
+      const personNameResult = normalizeRequiredText(personName, 'name');
+      if (!personNameResult.ok) return personNameResult;
+      this.findOrCreatePerson(personNameResult.value, provenance);
     } else if (resolvedType === 'project') {
       const projectName = fields.title || projectEntity?.name || titleFromRaw(inboxRaw);
-      this.findOrCreateProject(projectName, provenance);
+      const projectNameResult = normalizeRequiredText(projectName, 'name');
+      if (!projectNameResult.ok) return projectNameResult;
+      this.findOrCreateProject(projectNameResult.value, provenance);
     } else if (resolvedType === 'followup') {
+      // Recipient-shape guard keeps follow-up completion logic safe from malformed recipient rows.
+      const recipientsValidation = normalizeFollowUpRecipients(personEntities.map((person) => ({ personId: person.id, status: 'pending' })));
+      if (!recipientsValidation.ok) return recipientsValidation;
       const nextFollowUp = {
         ...baseRecord,
         source: 'inbox',
         sourceInboxId: inboxItem.id,
-        recipients: personEntities.map((person) => ({ personId: person.id, status: 'pending' }))
+        recipients: recipientsValidation.value
       };
       stampEntityMutableFields(nextFollowUp, MUTABLE_FIELDS_BY_COLLECTION.followUps, deviceId, now);
       this.state.followUps.unshift(nextFollowUp);
@@ -1253,22 +1301,27 @@ export class AppStore {
     updateStampedField(inboxItem, 'processedAt', provenance.processedAt, deviceId, now);
 
     await this.commitStateMutation(previousState, 'process');
+    return ok();
   }
 
   async addToToday(bucket, suggestionId) {
+    // ID guard keeps Today insertion deterministic and prevents accidental writes to ambiguous records.
+    const suggestionIdResult = validateId(suggestionId, 'suggestionId');
+    if (!suggestionIdResult.ok) return suggestionIdResult;
+
     const pool = [...this.state.suggestions.must, ...this.state.suggestions.should, ...this.state.suggestions.could];
-    const suggestion = pool.find((entry) => entry.id === suggestionId && !isDeletedEntity(entry) && !isArchivedEntity(entry));
-    if (!suggestion) return;
+    const suggestion = pool.find((entry) => entry.id === suggestionIdResult.value && !isDeletedEntity(entry) && !isArchivedEntity(entry));
+    if (!suggestion) return fail('SUGGESTION_NOT_FOUND', 'Suggestion not found or unavailable for Today.', { suggestionId });
 
     // Prevent duplicate Today entries for the same suggestion while preserving existing order.
-    const alreadyPresent = this.state.today.some((entry) => !isDeletedEntity(entry) && (entry.suggestionId || entry.id) === suggestionId);
-    if (alreadyPresent) return;
+    const alreadyPresent = this.state.today.some((entry) => !isDeletedEntity(entry) && (entry.suggestionId || entry.id) === suggestionIdResult.value);
+    if (alreadyPresent) return fail('TODAY_DUPLICATE_SUGGESTION', 'Suggestion is already in Today.', { suggestionId });
 
     const now = new Date().toISOString();
     const item = {
       ...suggestion,
       id: `today_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      suggestionId,
+      suggestionId: suggestionIdResult.value,
       bucket,
       execution: createTodayExecutionState('not started'),
       status: 'not started',
@@ -1279,8 +1332,12 @@ export class AppStore {
     stampEntityMutableFields(item, MUTABLE_FIELDS_BY_COLLECTION.today, getDeviceId(), now);
 
     this.state.today.push(item);
-    await this.persist();
+    const persistResult = await this.persist();
+    if (!persistResult.ok) {
+      return fail('TODAY_ADD_PERSIST_FAILED', 'Unable to save Today item due to local storage issues.');
+    }
     this.emit();
+    return ok();
   }
 
   async reorderToday(id, direction) {
@@ -1322,51 +1379,69 @@ export class AppStore {
   }
 
   async setTodayStatus(id, status) {
-    // Allowed status transitions for active work items.
-    const allowedStatuses = ['not started', 'in progress', 'waiting', 'blocked', 'complete', 'cancelled', 'deferred', 'archived'];
-    if (!allowedStatuses.includes(status)) return;
+    // Guard IDs and status enums so cross-view actions cannot persist malformed transition values.
+    const idResult = validateId(id, 'todayId');
+    if (!idResult.ok) return idResult;
+    const statusResult = validateStatusEnum(status, STATUS_ENUMS.today, 'status');
+    if (!statusResult.ok) return statusResult;
 
-    const index = this.state.today.findIndex((entry) => entry.id === id && !isDeletedEntity(entry));
-    if (index === -1) return;
+    const index = this.state.today.findIndex((entry) => entry.id === idResult.value && !isDeletedEntity(entry));
+    if (index === -1) return fail('TODAY_ITEM_NOT_FOUND', 'Today item not found or deleted.', { id });
 
     // Side effect: keep legacy `status` while treating `execution.status` as source of truth for MVP persistence.
     const next = normalizeTodayExecution(this.state.today[index]);
-    next.execution.status = status;
+    next.execution.status = statusResult.value;
     next.execution.updatedAt = new Date().toISOString();
+    const timestampResult = validateIsoDateTime(next.execution.updatedAt, 'execution.updatedAt');
+    if (!timestampResult.ok) return timestampResult;
     updateStampedField(next, 'execution', next.execution, getDeviceId(), next.execution.updatedAt);
-    updateStampedField(next, 'status', status, getDeviceId(), next.execution.updatedAt);
-    updateStampedField(next, 'archived', status === 'archived', getDeviceId(), next.execution.updatedAt);
+    updateStampedField(next, 'status', statusResult.value, getDeviceId(), next.execution.updatedAt);
+    updateStampedField(next, 'archived', statusResult.value === 'archived', getDeviceId(), next.execution.updatedAt);
     this.state.today[index] = next;
 
     // Persistence expectation: save status changes immediately so execute progress survives refreshes.
-    await this.persist();
+    const persistResult = await this.persist();
+    if (!persistResult.ok) {
+      return fail('TODAY_STATUS_PERSIST_FAILED', 'Unable to save Today status due to local storage issues.');
+    }
     this.emit();
+    return ok();
   }
 
   async deferTodayItem(id) {
     // Defer marks the item as intentionally postponed but keeps it in Today for visibility.
-    await this.setTodayStatus(id, 'deferred');
+    return this.setTodayStatus(id, 'deferred');
   }
 
   async archiveTodayItem(id) {
     // Archive marks the item as parked; item remains in Today for MVP history and can still show notes.
-    await this.setTodayStatus(id, 'archived');
+    return this.setTodayStatus(id, 'archived');
   }
 
   async addTodayUpdateNote(id, noteText) {
     const previousState = structuredClone(this.state);
-    const note = (noteText || '').trim();
-    if (!note) return;
 
-    const index = this.state.today.findIndex((entry) => entry.id === id && !isDeletedEntity(entry));
-    if (index === -1) return;
+    // ID guard ensures note updates only target a stable Today entity key.
+    const idResult = validateId(id, 'todayId');
+    if (!idResult.ok) return idResult;
+
+    const note = (noteText || '').trim();
+    // Empty notes are rejected to preserve close-day auditability requirements.
+    if (!note) return fail('TODAY_NOTE_REQUIRED', 'Update note cannot be empty.', { id });
+
+    const index = this.state.today.findIndex((entry) => entry.id === idResult.value && !isDeletedEntity(entry));
+    if (index === -1) return fail('TODAY_ITEM_NOT_FOUND', 'Today item not found or deleted.', { id });
 
     // Note side effect: append immutable timestamped updates directly onto the Today item execution state.
     const next = normalizeTodayExecution(this.state.today[index]);
+    const createdAt = new Date().toISOString();
+    const createdAtResult = validateIsoDateTime(createdAt, 'note.createdAt');
+    if (!createdAtResult.ok) return createdAtResult;
+
     next.execution.notes.push({
       id: `note_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       text: note,
-      createdAt: new Date().toISOString()
+      createdAt: createdAtResult.value
     });
     next.execution.updatedAt = new Date().toISOString();
     updateStampedField(next, 'execution', next.execution, getDeviceId(), next.execution.updatedAt);
@@ -1374,6 +1449,7 @@ export class AppStore {
 
     // Persistence expectation: notes are workflow evidence and must be saved with each write.
     await this.commitStateMutation(previousState, 'update note');
+    return ok();
   }
 
   getIncompleteTodayItems() {

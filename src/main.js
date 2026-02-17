@@ -159,7 +159,13 @@ async function retryStorageInitializationFromUi() {
 
 async function performStoreOperation(operationName, operation) {
   try {
-    await operation();
+    const result = await operation();
+    // Store methods return structured validation failures so UI messages stay actionable and consistent.
+    if (result && typeof result === 'object' && result.ok === false) {
+      syncPersistenceNotice();
+      setBackupNotice('error', `${operationName} failed: ${result.error?.message || 'validation error'}`);
+      return false;
+    }
     syncPersistenceNotice();
     return true;
   } catch (error) {
@@ -221,6 +227,10 @@ async function handleSnapshotImport(file) {
     const raw = await file.text();
     const payload = JSON.parse(raw);
     const result = await store.importSnapshot(payload);
+    if (!result.ok) {
+      setBackupNotice('error', result.error?.message || 'Import failed due to invalid input.');
+      return;
+    }
     const mergedCount = Object.values(result.merged || {}).reduce((sum, count) => sum + Number(count || 0), 0);
     setBackupNotice('ok', `Import complete. ${mergedCount} total merged records across known collections.`);
   } catch (error) {
@@ -469,7 +479,7 @@ function bindGlobalEvents() {
 
     const addTodayButton = event.target.closest('[data-add-today]');
     if (addTodayButton) {
-      await store.addToToday(addTodayButton.dataset.bucket, addTodayButton.dataset.addToday);
+      await performStoreOperation('Add to Today', () => store.addToToday(addTodayButton.dataset.bucket, addTodayButton.dataset.addToday));
       return;
     }
 
@@ -495,11 +505,11 @@ function bindGlobalEvents() {
       if (!itemId || !action) return;
 
       if (action === 'set-status') {
-        await store.setTodayStatus(itemId, status);
+        await performStoreOperation('Set Today status', () => store.setTodayStatus(itemId, status));
       } else if (action === 'defer') {
-        await store.deferTodayItem(itemId);
+        await performStoreOperation('Defer Today item', () => store.deferTodayItem(itemId));
       } else if (action === 'archive') {
-        await store.archiveTodayItem(itemId);
+        await performStoreOperation('Archive Today item', () => store.archiveTodayItem(itemId));
       }
       return;
     }
