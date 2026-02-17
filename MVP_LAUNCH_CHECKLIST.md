@@ -18,6 +18,8 @@ Use this checklist as the **single source of truth** for launch readiness meetin
 | E-004 | Sample data snapshot | `qa/evidence/persistence/export-import-snapshots/sample-export-2026-02-17.json` | Verified `schemaVersion`, `exportedAt`, `deviceId`, and collection payloads.
 | E-005 | Defect report query | `tracker://launch-scope?severity=P0,P1&status=open` | Launch-scope defect filter for open P0/P1 gate.
 | E-006 | Browser matrix log | `qa/manual/browser-matrix/2026-02-17-mvp-matrix.md` | Chrome/Firefox/Safari run records.
+| E-007 | Launch QA runbook | `qa/manual/runbooks/mvp-launch-cross-browser-runbook.md` | Repeatable manual QA launch script covering Capture→Close and export/import validation.
+| E-008 | Cross-browser launch execution log | `qa/manual/browser-matrix/2026-02-17-mvp-launch-execution.md` | Executed against Chromium/Firefox/WebKit with per-area Pass/Fail and defect reproduction steps.
 
 ## Data safety
 
@@ -57,12 +59,12 @@ Target browsers for MVP signoff:
 
 | Area | Browser | Owner | Status | Latest verification | Evidence |
 | --- | --- | --- | --- | --- | --- |
-| Core loop (Capture/Plan/Execute/Close) | Chrome | Ravi Menon | Pass | 2026-02-17 | E-006 |
-| Core loop (Capture/Plan/Execute/Close) | Firefox | Ravi Menon | Pass | 2026-02-17 | E-006 |
-| Core loop (Capture/Plan/Execute/Close) | Safari | Ravi Menon | Pass | 2026-02-17 | E-006 |
-| Export/Import | Chrome | Priya Sharma | Pass | 2026-02-17 | E-002, E-006 |
-| Export/Import | Firefox | Priya Sharma | Pass | 2026-02-17 | E-002, E-006 |
-| Export/Import | Safari | Priya Sharma | Blocked | 2026-02-17 | Pending Safari file-picker regression retest (DEF-219) |
+| Core loop (Capture/Plan/Execute/Close) | Chrome | Ravi Menon | Fail | 2026-02-17 | E-008 (DEF-CHR-PLAN-001) |
+| Core loop (Capture/Plan/Execute/Close) | Firefox | Ravi Menon | Fail | 2026-02-17 | E-008 (DEF-EXEC-001) |
+| Core loop (Capture/Plan/Execute/Close) | Safari | Ravi Menon | Fail | 2026-02-17 | E-008 (DEF-EXEC-001) |
+| Export/Import | Chrome | Priya Sharma | Pass | 2026-02-17 | E-008 |
+| Export/Import | Firefox | Priya Sharma | Pass | 2026-02-17 | E-008 |
+| Export/Import | Safari | Priya Sharma | Pass | 2026-02-17 | E-008 |
 | Keyboard + modal interactions | Chrome | Maya Johnson | Pass | 2026-02-17 | E-003, E-006 |
 | Keyboard + modal interactions | Firefox | Maya Johnson | Pass | 2026-02-17 | E-003, E-006 |
 | Keyboard + modal interactions | Safari | Maya Johnson | Pass | 2026-02-17 | E-003, E-006 |
@@ -74,10 +76,10 @@ Target browsers for MVP signoff:
 
 | Signoff field | Value |
 | --- | --- |
-| Signoff date/time (UTC) | 2026-02-17 18:30 UTC |
+| Signoff date/time (UTC) | 2026-02-17 20:10 UTC |
 | Approvers | Priya Sharma (Engineering), Ravi Menon (QA), Maya Johnson (Accessibility), Elena Rossi (Product) |
-| P0/P1 launch-scope defect declaration | **Declared: Zero open P0/P1 launch-scope defects at signoff time** (validated via E-005) |
-| Launch decision | Conditional GO — all remaining `Blocked` rows must be resolved and re-verified before production release |
+| P0/P1 launch-scope defect declaration | **Not cleared:** Open P1 defects remain (`DEF-CHR-PLAN-001`, `DEF-EXEC-001`) per E-008. |
+| Launch decision | **BLOCKED** — release cannot proceed until all browser matrix launch rows are `Pass` and no P0/P1 defects remain open. |
 
 ## Release signoff rule
 
