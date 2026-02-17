@@ -83,9 +83,22 @@ function bindGlobalEvents() {
   document.addEventListener('submit', async (event) => {
     const quickCapture = event.target.closest('[data-quick-capture]');
     const captureForm = event.target.closest('[data-capture-form]');
-    if (!quickCapture && !captureForm) return;
+    const executeNoteForm = event.target.closest('[data-execute-note-form]');
+    if (!quickCapture && !captureForm && !executeNoteForm) return;
 
     event.preventDefault();
+
+    if (executeNoteForm) {
+      const itemId = executeNoteForm.dataset.id;
+      const noteInput = executeNoteForm.querySelector('textarea[name="note"]');
+      const note = noteInput?.value?.trim() || '';
+      if (!itemId || !note) return;
+      await store.addTodayUpdateNote(itemId, note);
+      noteInput.value = '';
+      uiState.executeNoteItemId = null;
+      return;
+    }
+
     const form = event.target;
     const input = form.querySelector('input[name="globalCapture"], input[name="captureInput"]');
     if (!input?.value.trim()) return;
@@ -121,7 +134,7 @@ function bindGlobalEvents() {
       return;
     }
 
-    const archiveButton = event.target.closest('[data-action="archive"]');
+    const archiveButton = event.target.closest('[data-action="archive"]:not([data-execute-action])');
     if (archiveButton) {
       await store.toggleArchiveInbox(archiveButton.dataset.id);
       return;
@@ -144,6 +157,23 @@ function bindGlobalEvents() {
       const id = noteToggleButton.dataset.noteToggle;
       uiState.executeNoteItemId = uiState.executeNoteItemId === id ? null : id;
       store.emit();
+      return;
+    }
+
+    const executeActionButton = event.target.closest('[data-execute-action]');
+    if (executeActionButton) {
+      const itemId = executeActionButton.dataset.id;
+      const action = executeActionButton.dataset.executeAction;
+      const status = executeActionButton.dataset.status;
+      if (!itemId || !action) return;
+
+      if (action === 'set-status') {
+        await store.setTodayStatus(itemId, status);
+      } else if (action === 'defer') {
+        await store.deferTodayItem(itemId);
+      } else if (action === 'archive') {
+        await store.archiveTodayItem(itemId);
+      }
       return;
     }
 
