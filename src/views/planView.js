@@ -1,14 +1,22 @@
 import { escapeHtml } from '../utils/format.js';
 
+// Suggestion rows are keyboard-focusable so M/S/K and arrow navigation can operate without a mouse.
 function renderSuggestionColumn(name, items, todaySuggestionIds) {
   return `
     <section class="col">
       <h3>${name}</h3>
-      <div class="row-list" style="margin-top:0.35rem;">
+      <div class="row-list" data-nav-list="plan-suggestions" style="margin-top:0.35rem;">
         ${items.map((item) => {
           const alreadyInToday = todaySuggestionIds.has(item.id);
           return `
-            <article class="row">
+            <article
+              class="row"
+              tabindex="0"
+              data-nav-row
+              data-row-type="plan-suggestion"
+              data-suggestion-id="${item.id}"
+              data-suggestion-bucket="${name.toLowerCase()}"
+            >
               <div class="row-main">
                 <strong>${escapeHtml(item.title)}</strong>
                 <div class="row-meta muted">${item.type} · ${item.meta}</div>
@@ -33,9 +41,10 @@ function renderSuggestionColumn(name, items, todaySuggestionIds) {
 }
 
 export function renderPlan(state) {
+  // Today rows also participate in list navigation for consistent Plan-mode keyboard movement.
   const todaySuggestionIds = new Set(state.today.map((item) => item.suggestionId || item.id));
   const todayRows = state.today.map((item) => `
-    <article class="row" tabindex="0">
+    <article class="row" tabindex="0" data-nav-row data-row-type="plan-today" data-today-id="${item.id}">
       <div class="row-main">
         <strong>${escapeHtml(item.title)}</strong>
         <div class="row-meta muted">${item.bucket.toUpperCase()} · ${item.type} · ${item.meta}</div>
@@ -55,7 +64,7 @@ export function renderPlan(state) {
       </div>
       <section class="col" style="margin-bottom:0.45rem;">
         <h3>Today (starts empty)</h3>
-        <div class="row-list" style="margin-top:0.35rem;">
+        <div class="row-list" data-nav-list="plan-today" style="margin-top:0.35rem;">
           ${todayRows || '<p class="muted">Nothing in Today yet. Pull from suggestions below.</p>'}
         </div>
       </section>
