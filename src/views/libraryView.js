@@ -50,6 +50,27 @@ function renderPeople(state, selectedId) {
   `;
 }
 
+
+function renderLogs(state) {
+  if (!state.dailyLogs?.length) {
+    return '<p class="muted">No Daily Logs yet. Run Close mode to generate closure history.</p>';
+  }
+
+  return `
+    <div class="row-list">
+      ${state.dailyLogs.map((log) => `
+        <article class="row">
+          <div>
+            <strong>${escapeHtml(log.createdAt)}</strong>
+            <div class="muted">Planned: ${log.plannedCount} · Completed: ${log.completed.length} · Incomplete: ${log.incomplete.length}</div>
+            <div class="muted">Incomplete updates: ${log.incomplete.map((item) => `${escapeHtml(item.title)} (${escapeHtml(item.lastUpdate?.text || 'No update')})`).join(' · ') || 'none'}</div>
+          </div>
+        </article>
+      `).join('')}
+    </div>
+  `;
+}
+
 function renderMeetings(state, selectedId) {
   const selected = state.meetings.find((m) => m.id === selectedId) || state.meetings[0];
   const groups = state.followUps.filter((group) => group.meetingId === selected?.id);
@@ -89,7 +110,8 @@ export function renderLibrary(state, routeParts) {
   if (section === 'tasks') body = renderTasks(state);
   if (section === 'people') body = renderPeople(state, selectedId);
   if (section === 'meetings') body = renderMeetings(state, selectedId);
-  if (['projects', 'reminders', 'habits', 'logs'].includes(section)) {
+  if (section === 'logs') body = renderLogs(state);
+  if (['projects', 'reminders', 'habits'].includes(section)) {
     body = `<p class="muted">${titleCase(section)} list placeholder for wireframe.</p>`;
   }
 
